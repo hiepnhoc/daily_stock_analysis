@@ -26,6 +26,7 @@ from api.v1.endpoints import (
     stocks,
     system_config,
     usage,
+    vn_market,
 )
 
 # 创建 v1 版本主路由。
@@ -108,6 +109,12 @@ router.include_router(
     intelligence.router,
     prefix="/intelligence",
     tags=["Intelligence"]
+)
+
+router.include_router(
+    vn_market.router,
+    prefix="/vn",
+    tags=["VietnamMarket"]
 )
 
 router.include_router(

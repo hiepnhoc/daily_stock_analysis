@@ -1,0 +1,104 @@
+{
+  "generatedAt": "2026-06-26T13:10:47",
+  "mode": "tplus",
+  "items": [
+    {
+      "ticker": "HPG",
+      "action": "avoid",
+      "score": 66,
+      "confidence": 0.66,
+      "buyZone": [
+        29.64,
+        30.18
+      ],
+      "breakoutTrigger": 30.66,
+      "stopLoss": 28.62,
+      "targets": [
+        33.14,
+        34.54
+      ],
+      "positionSizePct": 0,
+      "reasons": [
+        "Giá đang giữ trên EMA20",
+        "Giá trên EMA60, xu hướng trung hạn chưa xấu",
+        "MACD histogram dương/cải thiện",
+        "Biên ATR vừa phải, dễ quản trị rủi ro"
+      ],
+      "riskFlags": [
+        "RSI14 cao, dễ thành mua đuổi",
+        "chưa kiểm chứng news/catalyst"
+      ],
+      "dataQuality": {
+        "ohlcv": {
+          "status": "available",
+          "source": "vndirect",
+          "warnings": []
+        }
+      },
+      "technical": {
+        "close": 30.36,
+        "ema20": 29.980000000002097,
+        "ema60": 29.18020995477429,
+        "ma50": 29.38,
+        "ma200": 26.38,
+        "rsi14": 100.0,
+        "macd": 0.2799999988979103,
+        "macdSignal": 0.2799999983792787,
+        "macdHist": 5.1863158212484e-10,
+        "volume": 1259000.0,
+        "vol20": 1249500.0,
+        "volumeRatio": 1.0076030412164867,
+        "atr14": 0.6000000000000014
+      }
+    },
+    {
+      "ticker": "FPT",
+      "action": "avoid",
+      "score": 66,
+      "confidence": 0.66,
+      "buyZone": [
+        29.64,
+        30.18
+      ],
+      "breakoutTrigger": 30.66,
+      "stopLoss": 28.62,
+      "targets": [
+        33.14,
+        34.54
+      ],
+      "positionSizePct": 0,
+      "reasons": [
+        "Giá đang giữ trên EMA20",
+        "Giá trên EMA60, xu hướng trung hạn chưa xấu",
+        "MACD histogram dương/cải thiện",
+        "Biên ATR vừa phải, dễ quản trị rủi ro"
+      ],
+      "riskFlags": [
+        "RSI14 cao, dễ thành mua đuổi",
+        "chưa kiểm chứng news/catalyst"
+      ],
+      "dataQuality": {
+        "ohlcv": {
+          "status": "available",
+          "source": "vndirect",
+          "warnings": []
+        }
+      },
+      "technical": {
+        "close": 30.36,
+        "ema20": 29.980000000002097,
+        "ema60": 29.18020995477429,
+        "ma50": 29.38,
+        "ma200": 26.38,
+        "rsi14": 100.0,
+        "macd": 0.2799999988979103,
+        "macdSignal": 0.2799999983792787,
+        "macdHist": 5.1863158212484e-10,
+        "volume": 1259000.0,
+        "vol20": 1249500.0,
+        "volumeRatio": 1.0076030412164867,
+        "atr14": 0.6000000000000014
+      }
+    }
+  ]
+}
