@@ -125,7 +125,18 @@ def test_analyze_endpoint_returns_technical_snapshot(tmp_path: Path) -> None:
     static_dir.mkdir()
     (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
 
-    with patch("src.vn.data.provider.get_daily_bars", return_value=_sample_ohlcv()):
+    from src.vn.schemas import DataQuality, NewsCatalyst, NewsItem
+
+    news = NewsCatalyst(
+        checked=True,
+        source="agent-reach:jina-reader",
+        freshnessWindow="7d",
+        sentiment="mixed",
+        catalysts=[NewsItem(title="HPG có tin public web cần theo dõi", source="CafeF", impact="medium")],
+        dataQuality=DataQuality(status="available", source="agent-reach:jina-reader"),
+    )
+    with patch("src.vn.data.provider.get_daily_bars", return_value=_sample_ohlcv()), \
+         patch("src.vn.services.vn_market_service.fetch_news_catalyst", return_value=news):
         client = TestClient(create_app(static_dir=static_dir))
         response = client.get("/api/v1/vn/analyze/HPG")
 
@@ -135,6 +146,27 @@ def test_analyze_endpoint_returns_technical_snapshot(tmp_path: Path) -> None:
     assert payload["technical"]["ema20"] is not None
     assert payload["breakoutTrigger"] is not None
     assert payload["riskFlags"]
+    assert payload["newsCatalyst"]["checked"] is True
+    assert payload["newsCatalyst"]["catalysts"][0]["source"] == "CafeF"
+    assert "chưa kiểm chứng news/catalyst" not in payload["riskFlags"]
+
+
+def test_chart_endpoint_returns_ohlcv_and_moving_averages(tmp_path: Path) -> None:
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    with patch("src.vn.data.provider.get_daily_bars", return_value=_sample_ohlcv()):
+        client = TestClient(create_app(static_dir=static_dir))
+        response = client.get("/api/v1/vn/chart/HPG?days=80")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["ticker"] == "HPG"
+    assert len(payload["items"]) == 80
+    latest = payload["items"][-1]
+    for key in ("date", "open", "high", "low", "close", "volume", "ema20", "ema60", "ma50", "rsi14", "macd", "macdSignal", "macdHist"):
+        assert latest[key] is not None
 
 
 def test_portfolio_tplus_endpoint_splits_sellable_pending_and_pl(tmp_path: Path) -> None:
@@ -143,7 +175,7 @@ def test_portfolio_tplus_endpoint_splits_sellable_pending_and_pl(tmp_path: Path)
     (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
 
     with patch("src.vn.data.provider.get_daily_bars", return_value=_sample_ohlcv()), \
-         patch("src.vn.data.ssi_iboard.fetch_live_quote", return_value={"price": 31.0, "source": "ssi_iboard"}):
+         patch("src.vn.data.ssi_iboard.fetch_live_quote", return_value={"price": 31000.0, "source": "ssi_iboard"}):
         client = TestClient(create_app(static_dir=static_dir))
         response = client.post(
             "/api/v1/vn/portfolio-check",
@@ -163,3 +195,97 @@ def test_portfolio_tplus_endpoint_splits_sellable_pending_and_pl(tmp_path: Path)
     assert item["pendingQty"] == 400
     assert item["todayPlan"]
     assert "hàng về" in item["pendingPlan"]
+
+
+def test_sector_flow_groups_watchlist_by_sector(tmp_path: Path) -> None:
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    with patch("src.vn.data.provider.get_daily_bars", return_value=_sample_ohlcv()):
+        client = TestClient(create_app(static_dir=static_dir))
+        response = client.post("/api/v1/vn/sector-flow", json={"watchlist": ["HPG", "HSG", "FPT"], "mode": "tplus"})
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["items"]
+    assert any(item["sector"] in {"Thép", "Công nghệ"} for item in payload["items"])
+    assert payload["items"][0]["tickers"]
+
+
+def test_alerts_check_flags_stop_breakout_and_hot_rsi(tmp_path: Path) -> None:
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    with patch("src.vn.data.provider.get_daily_bars", return_value=_sample_ohlcv()):
+        client = TestClient(create_app(static_dir=static_dir))
+        response = client.post("/api/v1/vn/alerts/check", json={"watchlist": ["HPG"], "mode": "tplus"})
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["items"]
+    assert payload["items"][0]["ticker"] == "HPG"
+    assert payload["items"][0]["alerts"]
+
+
+def test_alert_rules_check_evaluates_custom_thresholds(tmp_path: Path) -> None:
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    with patch("src.vn.data.provider.get_daily_bars", return_value=_sample_ohlcv()):
+        client = TestClient(create_app(static_dir=static_dir))
+        response = client.post(
+            "/api/v1/vn/alerts/rules/check",
+            json={"rules": [{"id": "r1", "ticker": "HPG", "condition": "price_above", "threshold": 20, "enabled": True}]},
+        )
+
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["ticker"] == "HPG"
+    assert item["triggered"] is True
+    assert "TRIGGER" in item["message"]
+
+
+def test_daily_playbook_returns_market_setups_and_portfolio_actions(tmp_path: Path) -> None:
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    with patch("src.vn.data.provider.get_daily_bars", return_value=_sample_ohlcv()), \
+         patch("src.vn.data.ssi_iboard.fetch_live_quote", return_value={"price": 31000.0, "source": "ssi_iboard"}):
+        client = TestClient(create_app(static_dir=static_dir))
+        response = client.post(
+            "/api/v1/vn/daily-playbook",
+            json={
+                "watchlist": ["HPG", "FPT", "SSI"],
+                "holdings": [{"ticker": "HPG", "quantity": 1000, "avgCost": 30.0, "sellableQty": 600, "pendingQty": 400}],
+                "mode": "tplus",
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["summary"]
+    assert payload["topSetups"]
+    assert payload["sectorBias"]
+    assert payload["portfolioActions"][0]["ticker"] == "HPG"
+    assert "chưa kiểm chứng news/catalyst" in payload["warnings"]
+
+
+def test_journal_create_and_list_signal(tmp_path: Path, monkeypatch) -> None:
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+    monkeypatch.setenv("VN_MARKET_JOURNAL_PATH", str(tmp_path / "journal.jsonl"))
+
+    client = TestClient(create_app(static_dir=static_dir))
+    create_resp = client.post(
+        "/api/v1/vn/journal",
+        json={"ticker": "HPG", "action": "watch", "score": 66, "note": "test signal"},
+    )
+    assert create_resp.status_code == 200, create_resp.text
+    list_resp = client.get("/api/v1/vn/journal")
+    assert list_resp.status_code == 200, list_resp.text
+    assert list_resp.json()["items"][0]["ticker"] == "HPG"

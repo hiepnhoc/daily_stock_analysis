@@ -40,6 +40,26 @@ class VNMarketContext(BaseModel):
     dataQuality: Dict[str, DataQuality] = Field(default_factory=dict)
 
 
+class NewsItem(BaseModel):
+    title: str
+    source: str = "public web"
+    date: Optional[str] = None
+    url: Optional[str] = None
+    impact: Literal["high", "medium", "low"] = "medium"
+    summary: str = ""
+
+
+class NewsCatalyst(BaseModel):
+    checked: bool = False
+    source: str = "agent-reach"
+    checkedAt: Optional[str] = None
+    freshnessWindow: str = "7d"
+    sentiment: Literal["positive", "neutral", "negative", "mixed", "unknown"] = "unknown"
+    catalysts: List[NewsItem] = Field(default_factory=list)
+    riskFlags: List[str] = Field(default_factory=list)
+    dataQuality: DataQuality = Field(default_factory=lambda: DataQuality(status="missing", source="agent-reach"))
+
+
 class VNActionPlan(BaseModel):
     ticker: str
     action: VNAction
@@ -54,3 +74,4 @@ class VNActionPlan(BaseModel):
     riskFlags: List[str] = Field(default_factory=list)
     dataQuality: Dict[str, DataQuality] = Field(default_factory=dict)
     technical: Optional[TechnicalSnapshot] = None
+    newsCatalyst: Optional[NewsCatalyst] = None

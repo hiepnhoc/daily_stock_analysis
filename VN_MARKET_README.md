@@ -20,6 +20,11 @@ Bản fork/local của `daily_stock_analysis` để thêm tab riêng cho thị t
 - SSI iBoard breadth/live quote adapter best-effort.
 - Indicator stack: EMA20, EMA60, MA50, MA200, RSI14, MACD, Vol20, ATR14.
 - VN T+ ActionPlan: action, score, buy zone, breakout, stop, targets, size, reasons, risk flags.
+- Analyze Stock VN panel for one-ticker action plan.
+- Portfolio T+ panel: sellable/pending split, P/L, today plan, pending plan.
+- Sector Flow panel: group watchlist by simple local sector map.
+- Alerts VN panel: check stop/breakout/hot RSI/volume triggers.
+- Journal / T+ Backtest panel: save/list signals for later T+3/T+5 review.
 - HTML/JSON export to shared Hermes knowledge:
 
 ```text
