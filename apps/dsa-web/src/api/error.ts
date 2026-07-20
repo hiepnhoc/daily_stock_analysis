@@ -237,7 +237,7 @@ export function formatParsedApiError(parsed: ParsedApiError): string {
   if (parsed.title === parsed.message) {
     return parsed.title;
   }
-  return `${parsed.title}：${parsed.message}`;
+  return `${parsed.title}: ${parsed.message}`;
 }
 
 export function getParsedApiError(error: unknown): ParsedApiError {
@@ -298,7 +298,7 @@ export function parseApiError(error: unknown): ParsedApiError {
   const causeMessage = getCauseMessage(error);
   const code = getErrorCode(error);
   const rawMessage = pickString(payloadText, response?.statusText, errorMessage, causeMessage, code)
-    ?? '请求未成功完成，请稍后重试。';
+    ?? 'Yêu cầu chưa hoàn tất, vui lòng thử lại sau.';
   const matchText = buildMatchText([rawMessage, errorMessage, causeMessage, code, errorCode, response?.statusText]);
 
   if (includesAny(matchText, ['agent mode is not enabled', 'agent_mode'])) {
@@ -519,8 +519,8 @@ export function parseApiError(error: unknown): ParsedApiError {
   );
   if (localConnectionFailed) {
     return createParsedApiError({
-      title: '无法连接到本地服务',
-      message: '浏览器当前无法连接到本地 Web 服务，请检查服务是否启动、监听地址是否正确、端口是否开放。',
+      title: 'Không kết nối được backend',
+      message: 'Backend có thể đang khởi động. Vui lòng chờ vài giây rồi thử lại.',
       rawMessage,
       status,
       category: 'local_connection_failed',
@@ -529,8 +529,8 @@ export function parseApiError(error: unknown): ParsedApiError {
 
   if (payloadText || status) {
     return createParsedApiError({
-      title: '请求失败',
-      message: payloadText ?? `请求未成功完成（HTTP ${status}）。`,
+      title: 'Yêu cầu thất bại',
+      message: payloadText ?? `Yêu cầu chưa hoàn tất (HTTP ${status}).`,
       rawMessage,
       status,
       category: 'http_error',
@@ -538,7 +538,7 @@ export function parseApiError(error: unknown): ParsedApiError {
   }
 
   return createParsedApiError({
-    title: '请求失败',
+    title: 'Yêu cầu thất bại',
     message: rawMessage,
     rawMessage,
     status,
@@ -546,7 +546,7 @@ export function parseApiError(error: unknown): ParsedApiError {
   });
 }
 
-export function toApiErrorMessage(error: unknown, fallback = '请求未成功完成，请稍后重试。'): string {
+export function toApiErrorMessage(error: unknown, fallback = 'Yêu cầu chưa hoàn tất, vui lòng thử lại sau.'): string {
   const parsed = getParsedApiError(error);
   const message = formatParsedApiError(parsed);
   return message.trim() || fallback;

@@ -56,6 +56,35 @@ _SECTOR_MAP = {
     "GAS": "Dầu khí", "PLX": "Dầu khí", "PVD": "Dầu khí", "PVS": "Dầu khí",
 }
 
+_TICKER_NAME_MAP = {
+    "ACB": "Ngân hàng Á Châu",
+    "CTG": "VietinBank",
+    "DGW": "Digiworld",
+    "DXG": "Đất Xanh Group",
+    "FPT": "FPT Corp",
+    "FRT": "FPT Retail",
+    "GAS": "PV GAS",
+    "HCM": "Chứng khoán HSC",
+    "HPG": "Hòa Phát",
+    "HSG": "Hoa Sen Group",
+    "KDH": "Khang Điền",
+    "MBB": "MBBank",
+    "MWG": "Thế Giới Di Động",
+    "NKG": "Nam Kim",
+    "NLG": "Nam Long",
+    "PLX": "Petrolimex",
+    "PVD": "PV Drilling",
+    "PVS": "Dịch vụ Kỹ thuật Dầu khí",
+    "SHB": "Ngân hàng SHB",
+    "SSI": "Chứng khoán SSI",
+    "TCB": "Techcombank",
+    "VCB": "Vietcombank",
+    "VCI": "Chứng khoán Vietcap",
+    "VHM": "Vinhomes",
+    "VIX": "Chứng khoán VIX",
+    "VND": "Chứng khoán VNDirect",
+}
+
 
 def _technical_for_ticker(ticker: str) -> tuple[TechnicalSnapshot | None, Dict[str, DataQuality]]:
     df = provider.get_daily_bars(ticker, days=260)
@@ -255,6 +284,7 @@ def portfolio_check(holdings: List[dict]) -> dict:
         items.append(
             {
                 "ticker": ticker,
+                "name": _TICKER_NAME_MAP.get(ticker),
                 "quantity": quantity,
                 "avgCost": avg_cost,
                 "currentPrice": round(current_price, 2) if current_price else None,
@@ -455,10 +485,6 @@ def daily_playbook(watchlist: List[str], holdings: List[dict] | None = None, mod
         )
     sector_items.sort(key=lambda row: (row["avgScore"], row["candidateCount"]), reverse=True)
     top_setups = [item for item in items if item.get("action") in {"buy_zone", "watch_breakout", "watch", "hold"}][:5]
-    # Even on weak days, keep a ranked candidate list visible so the UI can show
-    # what to monitor first; avoid/sell_reduce names remain flagged separately.
-    if not top_setups:
-        top_setups = items[:5]
     avoid_list = [item for item in items if item.get("action") in {"avoid", "sell_reduce"}][:5]
     market_bias = overview.get("marketBias") or "neutral"
     breadth = overview.get("breadth") or {}

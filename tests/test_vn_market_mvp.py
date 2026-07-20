@@ -120,6 +120,18 @@ def test_market_overview_uses_ssi_breadth_when_available(tmp_path: Path) -> None
     assert payload["liquidity"]["totalValue"] == 123456789
 
 
+def test_vn_readiness_endpoint_is_lightweight(tmp_path: Path) -> None:
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    client = TestClient(create_app(static_dir=static_dir))
+    response = client.get("/api/v1/vn/readiness")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ready", "service": "vn-market"}
+
+
 def test_analyze_endpoint_returns_technical_snapshot(tmp_path: Path) -> None:
     static_dir = tmp_path / "static"
     static_dir.mkdir()
@@ -197,6 +209,24 @@ def test_portfolio_tplus_endpoint_splits_sellable_pending_and_pl(tmp_path: Path)
     assert "hàng về" in item["pendingPlan"]
 
 
+def test_portfolio_endpoint_rejects_invalid_holdings_before_service_call(tmp_path: Path) -> None:
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+    client = TestClient(create_app(static_dir=static_dir))
+
+    invalid_holdings = [
+        {"ticker": "???", "quantity": 100, "avgCost": 30, "sellableQty": 100, "pendingQty": 0},
+        {"ticker": "HPG", "quantity": 0, "avgCost": 30, "sellableQty": 0, "pendingQty": 0},
+        {"ticker": "FPT", "quantity": 100, "avgCost": -1, "sellableQty": 100, "pendingQty": 0},
+        {"ticker": "SSI", "quantity": 100, "avgCost": 25, "sellableQty": 80, "pendingQty": 30},
+    ]
+
+    for holding in invalid_holdings:
+        response = client.post("/api/v1/vn/portfolio-check", json={"holdings": [holding]})
+        assert response.status_code == 422, response.text
+
+
 def test_sector_flow_groups_watchlist_by_sector(tmp_path: Path) -> None:
     static_dir = tmp_path / "static"
     static_dir.mkdir()
@@ -268,10 +298,39 @@ def test_daily_playbook_returns_market_setups_and_portfolio_actions(tmp_path: Pa
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["summary"]
-    assert payload["topSetups"]
+    assert all(item["action"] not in {"avoid", "sell_reduce"} for item in payload["topSetups"])
+    assert payload["topSetups"] or payload["avoidList"]
     assert payload["sectorBias"]
     assert payload["portfolioActions"][0]["ticker"] == "HPG"
     assert "chưa kiểm chứng news/catalyst" in payload["warnings"]
+
+
+def test_daily_playbook_does_not_label_avoid_rows_as_top_setups(tmp_path: Path) -> None:
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+    avoid_item = {
+        "ticker": "HPG", "action": "avoid", "score": 20, "confidence": 0.2,
+        "buyZone": None, "breakoutTrigger": None, "stopLoss": None, "targets": [],
+        "positionSizePct": 0, "reasons": [], "riskFlags": ["setup yếu"],
+        "dataQuality": {}, "technical": None, "newsCatalyst": None,
+    }
+    overview = {
+        "refDate": "2026-07-10", "indices": [],
+        "breadth": {"advancers": 10, "decliners": 20, "ceiling": 0, "floor": 0, "unchanged": 0},
+        "liquidity": {"totalValue": None, "vs20dPct": None},
+        "marketBias": "cautious", "warnings": [],
+    }
+
+    with patch("src.vn.services.vn_market_service.get_market_overview", return_value=overview), \
+         patch("src.vn.services.vn_market_service.scan_watchlist", return_value={"items": [avoid_item]}):
+        client = TestClient(create_app(static_dir=static_dir))
+        response = client.post("/api/v1/vn/daily-playbook", json={"watchlist": ["HPG"], "holdings": [], "mode": "tplus"})
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["topSetups"] == []
+    assert payload["avoidList"][0]["ticker"] == "HPG"
 
 
 def test_journal_create_and_list_signal(tmp_path: Path, monkeypatch) -> None:

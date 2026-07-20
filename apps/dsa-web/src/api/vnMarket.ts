@@ -35,13 +35,23 @@ export interface VNScanRequest {
   mode: 'tplus' | 'breakout' | 'pullback';
 }
 
+export interface VNNewsSourceStatus {
+  name: string;
+  status: 'available' | 'partial' | 'missing_tool' | 'failed' | 'disabled';
+  items: number;
+  route?: string | null;
+  warning?: string | null;
+}
+
 export interface VNNewsItem {
   title: string;
   source: string;
   date?: string | null;
   url?: string | null;
   impact: 'high' | 'medium' | 'low';
+  tone?: 'positive' | 'neutral' | 'negative' | 'mixed' | 'unknown';
   summary: string;
+  sourceRoute?: string | null;
 }
 
 export interface VNNewsCatalyst {
@@ -51,6 +61,7 @@ export interface VNNewsCatalyst {
   freshnessWindow: string;
   sentiment: 'positive' | 'neutral' | 'negative' | 'mixed' | 'unknown';
   catalysts: VNNewsItem[];
+  sourcesChecked?: VNNewsSourceStatus[];
   riskFlags: string[];
   dataQuality?: Record<string, unknown>;
 }
@@ -114,6 +125,7 @@ export interface VNPortfolioHolding {
 }
 
 export interface VNPortfolioItem extends VNPortfolioHolding {
+  name?: string | null;
   currentPrice: number | null;
   marketValue: number | null;
   pl: number | null;
@@ -196,6 +208,11 @@ export interface VNDailyPlaybookResponse {
 }
 
 export const vnMarketApi = {
+  async getReadiness(): Promise<{ status: 'ready'; service: string }> {
+    const { data } = await apiClient.get<{ status: 'ready'; service: string }>('/api/v1/vn/readiness');
+    return data;
+  },
+
   async getOverview(): Promise<VNMarketOverview> {
     const { data } = await apiClient.get<VNMarketOverview>('/api/v1/vn/market-overview');
     return data;

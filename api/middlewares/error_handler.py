@@ -61,8 +61,8 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
                 status_code=500,
                 content={
                     "error": "internal_error",
-                    "message": "服务器内部错误，请稍后重试",
-                    "detail": str(e) if logger.isEnabledFor(logging.DEBUG) else None
+                    "message": "Máy chủ gặp lỗi nội bộ, vui lòng thử lại sau",
+                    "detail": None
                 }
             )
 
@@ -101,12 +101,16 @@ def add_error_handlers(app) -> None:
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
         """处理请求验证异常"""
+        errors = []
+        for item in exc.errors():
+            safe_item = {key: value for key, value in item.items() if key != "ctx"}
+            errors.append(safe_item)
         return JSONResponse(
             status_code=422,
             content={
                 "error": "validation_error",
-                "message": "请求参数验证失败",
-                "detail": exc.errors()
+                "message": "Dữ liệu đầu vào không hợp lệ",
+                "detail": errors
             }
         )
     
@@ -122,7 +126,7 @@ def add_error_handlers(app) -> None:
             status_code=500,
             content={
                 "error": "internal_error",
-                "message": "服务器内部错误",
+                "message": "Máy chủ gặp lỗi nội bộ",
                 "detail": None
             }
         )

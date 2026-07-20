@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import List, Literal
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.vn.services import vn_market_service
 
@@ -18,10 +18,24 @@ class VNScanRequest(BaseModel):
 
 class VNPortfolioHolding(BaseModel):
     ticker: str
-    quantity: int = 0
-    avgCost: float = 0
-    sellableQty: int = 0
-    pendingQty: int = 0
+    quantity: int = Field(gt=0)
+    avgCost: float = Field(gt=0)
+    sellableQty: int = Field(ge=0)
+    pendingQty: int = Field(ge=0)
+
+    @field_validator("ticker")
+    @classmethod
+    def validate_ticker(cls, value: str) -> str:
+        symbol = value.strip().upper()
+        if len(symbol) != 3 or not symbol.isalpha() or not symbol.isascii():
+            raise ValueError("Mã cổ phiếu phải gồm đúng 3 chữ cái A-Z")
+        return symbol
+
+    @model_validator(mode="after")
+    def validate_quantities(self):
+        if self.sellableQty + self.pendingQty > self.quantity:
+            raise ValueError("Tổng khả dụng và chờ về không được vượt số lượng")
+        return self
 
 
 class VNPortfolioCheckRequest(BaseModel):
@@ -57,6 +71,11 @@ class VNAlertRulesRequest(BaseModel):
 @router.get("/market-overview")
 def get_market_overview():
     return vn_market_service.get_market_overview()
+
+
+@router.get("/readiness")
+def readiness():
+    return {"status": "ready", "service": "vn-market"}
 
 
 @router.post("/scan")

@@ -40,13 +40,23 @@ class VNMarketContext(BaseModel):
     dataQuality: Dict[str, DataQuality] = Field(default_factory=dict)
 
 
+class NewsSourceStatus(BaseModel):
+    name: str
+    status: Literal["available", "partial", "missing_tool", "failed", "disabled"] = "available"
+    items: int = 0
+    route: Optional[str] = None
+    warning: Optional[str] = None
+
+
 class NewsItem(BaseModel):
     title: str
     source: str = "public web"
     date: Optional[str] = None
     url: Optional[str] = None
     impact: Literal["high", "medium", "low"] = "medium"
+    tone: Literal["positive", "neutral", "negative", "mixed", "unknown"] = "unknown"
     summary: str = ""
+    sourceRoute: Optional[str] = None
 
 
 class NewsCatalyst(BaseModel):
@@ -56,6 +66,7 @@ class NewsCatalyst(BaseModel):
     freshnessWindow: str = "7d"
     sentiment: Literal["positive", "neutral", "negative", "mixed", "unknown"] = "unknown"
     catalysts: List[NewsItem] = Field(default_factory=list)
+    sourcesChecked: List[NewsSourceStatus] = Field(default_factory=list)
     riskFlags: List[str] = Field(default_factory=list)
     dataQuality: DataQuality = Field(default_factory=lambda: DataQuality(status="missing", source="agent-reach"))
 
