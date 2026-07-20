@@ -29,6 +29,8 @@ from api.v1.schemas.portfolio import (
     PortfolioImportCommitResponse,
     PortfolioImportParseResponse,
     PortfolioImportTradeItem,
+    PortfolioOpeningPositionsRequest,
+    PortfolioOpeningPositionsResponse,
     PortfolioPositionAnalysisRequest,
     PortfolioRiskResponse,
     PortfolioSnapshotResponse,
@@ -46,6 +48,7 @@ from src.services.portfolio_service import (
 )
 
 logger = logging.getLogger(__name__)
+MAX_PORTFOLIO_CSV_BYTES = 5 * 1024 * 1024
 
 router = APIRouter()
 
@@ -63,6 +66,15 @@ def _conflict_error(*, error: str, message: str) -> HTTPException:
     return api_error(409, error, message)
 
 
+def _read_import_upload(file: UploadFile) -> bytes:
+    content = file.file.read(MAX_PORTFOLIO_CSV_BYTES + 1)
+    if not content:
+        raise ValueError("CSV file is empty")
+    if len(content) > MAX_PORTFOLIO_CSV_BYTES:
+        raise ValueError("CSV file exceeds 5 MiB limit")
+    return content
+
+
 def _serialize_import_record(item: dict) -> PortfolioImportTradeItem:
     payload = dict(item)
     trade_date = payload.get("trade_date")
@@ -70,6 +82,9 @@ def _serialize_import_record(item: dict) -> PortfolioImportTradeItem:
         payload["trade_date"] = trade_date.isoformat()
     else:
         payload["trade_date"] = str(trade_date)
+    settlement_date = payload.get("settlement_date")
+    if isinstance(settlement_date, date):
+        payload["settlement_date"] = settlement_date.isoformat()
     return PortfolioImportTradeItem(**payload)
 
 
@@ -181,6 +196,8 @@ def create_trade(request: PortfolioTradeCreateRequest) -> PortfolioEventCreatedR
             market=request.market,
             currency=request.currency,
             trade_uid=request.trade_uid,
+            settlement_date=request.settlement_date,
+            settlement_estimated=request.settlement_estimated,
             note=request.note,
         )
         return PortfolioEventCreatedResponse(**data)
@@ -194,6 +211,32 @@ def create_trade(request: PortfolioTradeCreateRequest) -> PortfolioEventCreatedR
         raise _bad_request(exc)
     except Exception as exc:
         raise _internal_error("Create trade failed", exc)
+
+
+@router.post(
+    "/opening-positions",
+    response_model=PortfolioOpeningPositionsResponse,
+    responses={400: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
+    summary="Import opening positions into an empty VN account",
+)
+def import_opening_positions(request: PortfolioOpeningPositionsRequest) -> PortfolioOpeningPositionsResponse:
+    service = PortfolioService()
+    try:
+        data = service.import_opening_positions(
+            account_id=request.account_id,
+            as_of=request.as_of,
+            import_id=request.import_id,
+            holdings=[item.model_dump() for item in request.holdings],
+        )
+        return PortfolioOpeningPositionsResponse(**data)
+    except PortfolioBusyError as exc:
+        raise _conflict_error(error="portfolio_busy", message=str(exc))
+    except PortfolioConflictError as exc:
+        raise _conflict_error(error="conflict", message=str(exc))
+    except ValueError as exc:
+        raise _bad_request(exc)
+    except Exception as exc:
+        raise _internal_error("Import opening positions failed", exc)
 
 
 @router.get(
@@ -557,13 +600,14 @@ def _resolve_position_analysis_context(
     summary="Parse broker CSV into normalized trade records",
 )
 def parse_csv_import(
-    broker: str = Form(..., description="Broker id: huatai/citic/cmb"),
+    broker: str = Form(..., description="Broker/template id: huatai/citic/cmb/generic_vn"),
+    price_unit: Optional[str] = Form(None, description="Required for generic_vn: vnd or thousand_vnd"),
     file: UploadFile = File(...),
 ) -> PortfolioImportParseResponse:
     importer = PortfolioImportService()
     try:
-        content = file.file.read()
-        parsed = importer.parse_trade_csv(broker=broker, content=content)
+        content = _read_import_upload(file)
+        parsed = importer.parse_trade_csv(broker=broker, content=content, price_unit=price_unit)
         return PortfolioImportParseResponse(
             broker=parsed["broker"],
             record_count=parsed["record_count"],
@@ -600,14 +644,15 @@ def list_csv_brokers() -> PortfolioImportBrokerListResponse:
 )
 def commit_csv_import(
     account_id: int = Form(...),
-    broker: str = Form(..., description="Broker id: huatai/citic/cmb"),
+    broker: str = Form(..., description="Broker/template id: huatai/citic/cmb/generic_vn"),
+    price_unit: Optional[str] = Form(None, description="Required for generic_vn: vnd or thousand_vnd"),
     dry_run: bool = Form(False),
     file: UploadFile = File(...),
 ) -> PortfolioImportCommitResponse:
     importer = PortfolioImportService()
     try:
-        content = file.file.read()
-        parsed = importer.parse_trade_csv(broker=broker, content=content)
+        content = _read_import_upload(file)
+        parsed = importer.parse_trade_csv(broker=broker, content=content, price_unit=price_unit)
         result = importer.commit_trade_records(
             account_id=account_id,
             broker=parsed["broker"],

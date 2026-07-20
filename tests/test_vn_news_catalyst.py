@@ -1,8 +1,19 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from src.vn.news_catalyst import _dedupe_items, _decorate_item, _public_warning, fetch_news_catalyst
-from src.vn.schemas import NewsItem
+from pathlib import Path
+import threading
+
+from src.vn.news_catalyst import (
+    SourceResult,
+    _dedupe_items,
+    _decorate_item,
+    _public_warning,
+    _resolve_tool,
+    clear_news_cache,
+    fetch_news_catalyst,
+)
+from src.vn.schemas import NewsItem, NewsSourceStatus
 
 
 def test_news_item_decorator_classifies_negative_high_impact() -> None:
@@ -47,3 +58,73 @@ def test_public_warning_never_exposes_stack_trace_or_local_path() -> None:
     assert warning == "Exa tạm không khả dụng"
     assert "/Users/" not in warning
     assert "McpRuntime" not in warning
+
+
+def test_resolve_tool_finds_user_npm_global_bin_when_service_path_is_minimal(tmp_path: Path, monkeypatch) -> None:
+    mcporter = tmp_path / ".npm-global" / "bin" / "mcporter"
+    mcporter.parent.mkdir(parents=True)
+    mcporter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    mcporter.chmod(0o755)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+
+    assert _resolve_tool("mcporter", env_var="VN_NEWS_MCPORTER_PATH") == str(mcporter)
+
+
+def test_fetch_news_catalyst_reuses_ttl_cache(monkeypatch) -> None:
+    clear_news_cache()
+    calls = {"google": 0}
+
+    def fake_google(ticker: str, days: int):
+        calls["google"] += 1
+        return [NewsItem(title=f"{ticker} có tin mới", source="CafeF", url="https://example.com/news")]
+
+    monkeypatch.setenv("VN_NEWS_CACHE_TTL_SECONDS", "300")
+    monkeypatch.setattr("src.vn.news_catalyst._google_news_rss_items", fake_google)
+    monkeypatch.setattr("src.vn.news_catalyst._direct_rss_items", lambda _ticker: [])
+    monkeypatch.setattr("src.vn.news_catalyst._jina_search_items", lambda _ticker, _days: [])
+    monkeypatch.setattr(
+        "src.vn.news_catalyst._exa_items",
+        lambda _ticker, _days: SourceResult(
+            status=NewsSourceStatus(name="exa", status="partial", items=0, route="agent-reach:exa:mcporter"),
+            items=[],
+        ),
+    )
+
+    first = fetch_news_catalyst("FPT")
+    second = fetch_news_catalyst("FPT")
+
+    assert first.catalysts[0].url == "https://example.com/news"
+    assert second.catalysts[0].url == "https://example.com/news"
+    assert calls["google"] == 1
+
+
+def test_fetch_news_catalyst_runs_independent_sources_concurrently(monkeypatch) -> None:
+    clear_news_cache()
+    barrier = threading.Barrier(4, timeout=2)
+
+    def empty_source(*_args):
+        barrier.wait()
+        return []
+
+    def empty_exa(*_args):
+        barrier.wait()
+        return SourceResult(
+            status=NewsSourceStatus(name="exa", status="partial", items=0, route="agent-reach:exa:mcporter"),
+            items=[],
+        )
+
+    monkeypatch.setenv("VN_NEWS_CACHE_TTL_SECONDS", "0")
+    monkeypatch.setattr("src.vn.news_catalyst._google_news_rss_items", empty_source)
+    monkeypatch.setattr("src.vn.news_catalyst._direct_rss_items", empty_source)
+    monkeypatch.setattr("src.vn.news_catalyst._jina_search_items", empty_source)
+    monkeypatch.setattr("src.vn.news_catalyst._exa_items", empty_exa)
+
+    news = fetch_news_catalyst("FPT")
+
+    assert [source.name for source in news.sourcesChecked] == [
+        "google_news_rss",
+        "direct_vn_rss",
+        "jina_reader",
+        "exa",
+    ]

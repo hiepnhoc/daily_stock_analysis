@@ -186,7 +186,7 @@ describe('agentChatStore.startStream', () => {
     expect(state.loading).toBe(false);
     expect(state.messages).toHaveLength(1);
     expect(state.chatError).toMatchObject({
-      title: '请求失败',
+      title: 'Yêu cầu thất bại',
       message: '分析出错',
       category: 'unknown',
       rawMessage: '分析出错',

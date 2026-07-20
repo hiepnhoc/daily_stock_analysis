@@ -1150,6 +1150,171 @@ class PortfolioServiceTestCase(unittest.TestCase):
         self.assertEqual({item["symbol"] for item in trades["items"]}, {"HK700", "00700.HK", "700.HK"})
         self.assertEqual({item["symbol"] for item in actions["items"]}, {"HK700", "00700.HK", "700.HK"})
 
+    def test_vn_tplus_snapshot_splits_sellable_and_pending_quantities(self) -> None:
+        account = self.service.create_account(name="VN Main", broker="SSI", market="vn", base_currency="VND")
+        aid = account["id"]
+        self.service.record_trade(
+            account_id=aid,
+            symbol="FPT",
+            trade_date=date(2026, 1, 2),  # Friday
+            side="buy",
+            quantity=100,
+            price=100000,
+            market="vn",
+            currency="VND",
+        )
+
+        with patch.object(PortfolioService, "_resolve_position_price", return_value=SimpleNamespace(
+            price=105000.0,
+            source="unit-test",
+            provider="unit-test",
+            price_date=date(2026, 1, 5),
+            is_stale=False,
+            is_available=True,
+        )):
+            pending_snapshot = self.service.get_portfolio_snapshot(
+                account_id=aid,
+                as_of=date(2026, 1, 5),  # Monday, only T+1 business day
+                cost_method="fifo",
+            )
+            settled_snapshot = self.service.get_portfolio_snapshot(
+                account_id=aid,
+                as_of=date(2026, 1, 6),  # Tuesday, T+2 business days
+                cost_method="fifo",
+            )
+
+        pending = pending_snapshot["accounts"][0]["positions"][0]
+        self.assertEqual(pending["quantity"], 100.0)
+        self.assertEqual(pending["sellable_quantity"], 0.0)
+        self.assertEqual(pending["pending_quantity"], 100.0)
+        self.assertEqual(pending["next_settlement_date"], "2026-01-06")
+        self.assertFalse(pending["settlement_estimated"])
+
+        settled = settled_snapshot["accounts"][0]["positions"][0]
+        self.assertEqual(settled["sellable_quantity"], 100.0)
+        self.assertEqual(settled["pending_quantity"], 0.0)
+        self.assertIsNone(settled["next_settlement_date"])
+
+    def test_vn_sell_rejects_unsettled_quantity_then_allows_on_tplus2(self) -> None:
+        account = self.service.create_account(name="VN Main", broker="SSI", market="vn", base_currency="VND")
+        aid = account["id"]
+        self.service.record_trade(
+            account_id=aid,
+            symbol="FPT",
+            trade_date=date(2026, 1, 2),
+            side="buy",
+            quantity=100,
+            price=100000,
+            market="vn",
+            currency="VND",
+        )
+
+        with self.assertRaises(PortfolioOversellError) as ctx:
+            self.service.record_trade(
+                account_id=aid,
+                symbol="FPT",
+                trade_date=date(2026, 1, 5),
+                side="sell",
+                quantity=1,
+                price=105000,
+                market="vn",
+                currency="VND",
+            )
+        self.assertEqual(ctx.exception.available_quantity, 0.0)
+
+        result = self.service.record_trade(
+            account_id=aid,
+            symbol="FPT",
+            trade_date=date(2026, 1, 6),
+            side="sell",
+            quantity=40,
+            price=105000,
+            market="vn",
+            currency="VND",
+        )
+        self.assertGreater(result["id"], 0)
+
+    def test_vn_tplus_uses_official_2026_exchange_holidays(self) -> None:
+        account = self.service.create_account(name="VN Holiday", broker="Demo", market="vn", base_currency="VND")
+        aid = account["id"]
+        self.service.record_trade(
+            account_id=aid,
+            symbol="FPT",
+            trade_date=date(2026, 4, 29),
+            side="buy",
+            quantity=100,
+            price=100000,
+            market="vn",
+            currency="VND",
+        )
+
+        pending = self.service.get_portfolio_snapshot(
+            account_id=aid,
+            as_of=date(2026, 5, 4),
+            cost_method="fifo",
+        )["accounts"][0]["positions"][0]
+        self.assertEqual(pending["sellable_quantity"], 0.0)
+        self.assertEqual(pending["next_settlement_date"], "2026-05-05")
+        self.assertFalse(pending["settlement_estimated"])
+
+        settled = self.service.get_portfolio_snapshot(
+            account_id=aid,
+            as_of=date(2026, 5, 5),
+            cost_method="fifo",
+        )["accounts"][0]["positions"][0]
+        self.assertEqual(settled["sellable_quantity"], 100.0)
+        self.assertEqual(settled["pending_quantity"], 0.0)
+
+    def test_vn_opening_positions_preserve_cash_and_exact_settlement_split(self) -> None:
+        account = self.service.create_account(name="VN Opening", broker="Manual", market="vn", base_currency="VND")
+        aid = account["id"]
+        result = self.service.import_opening_positions(
+            account_id=aid,
+            as_of=date(2026, 1, 5),
+            import_id="opening-001",
+            holdings=[{
+                "symbol": "FPT",
+                "quantity": 100,
+                "avg_cost": 100000,
+                "sellable_quantity": 60,
+                "pending_quantity": 40,
+            }],
+        )
+        self.assertEqual(result["inserted_events"], 2)
+
+        with patch.object(PortfolioService, "_resolve_position_price", return_value=SimpleNamespace(
+            price=105000.0,
+            source="unit-test",
+            provider="unit-test",
+            price_date=date(2026, 1, 5),
+            is_stale=False,
+            is_available=True,
+        )):
+            snapshot = self.service.get_portfolio_snapshot(
+                account_id=aid,
+                as_of=date(2026, 1, 5),
+                cost_method="avg",
+            )
+        account_snapshot = snapshot["accounts"][0]
+        position = account_snapshot["positions"][0]
+        self.assertEqual(account_snapshot["total_cash"], 0.0)
+        self.assertEqual(position["sellable_quantity"], 60.0)
+        self.assertEqual(position["pending_quantity"], 40.0)
+        self.assertEqual(position["next_settlement_date"], "2026-01-07")
+
+        trades = self.service.list_trade_events(account_id=aid, page=1, page_size=20)
+        self.assertTrue(all(item["affects_cash"] is False for item in trades["items"]))
+        with self.assertRaises(PortfolioConflictError):
+            self.service.import_opening_positions(
+                account_id=aid,
+                as_of=date(2026, 1, 5),
+                import_id="opening-002",
+                holdings=[{
+                    "symbol": "HPG", "quantity": 10, "avg_cost": 30000,
+                    "sellable_quantity": 10, "pending_quantity": 0,
+                }],
+            )
+
     def test_portfolio_write_session_maps_sqlite_locked_error(self) -> None:
         repo = PortfolioRepository(db_manager=self.db)
         session = self.db.get_session()

@@ -16,6 +16,8 @@ import type {
   PortfolioImportBrokerListResponse,
   PortfolioImportCommitResponse,
   PortfolioImportParseResponse,
+  PortfolioOpeningPositionsRequest,
+  PortfolioOpeningPositionsResponse,
   PortfolioPositionAnalysisRequest,
   PortfolioRiskResponse,
   PortfolioSnapshotResponse,
@@ -171,9 +173,27 @@ export const portfolioApi = {
       market: payload.market,
       currency: payload.currency,
       trade_uid: payload.tradeUid,
+      settlement_date: payload.settlementDate,
+      settlement_estimated: payload.settlementEstimated,
       note: payload.note,
     });
     return toCamelCase<PortfolioEventCreatedResponse>(response.data);
+  },
+
+  async importOpeningPositions(payload: PortfolioOpeningPositionsRequest): Promise<PortfolioOpeningPositionsResponse> {
+    const response = await apiClient.post<Record<string, unknown>>('/api/v1/portfolio/opening-positions', {
+      account_id: payload.accountId,
+      as_of: payload.asOf,
+      import_id: payload.importId,
+      holdings: payload.holdings.map((item) => ({
+        symbol: item.symbol,
+        quantity: item.quantity,
+        avg_cost: item.avgCost,
+        sellable_quantity: item.sellableQuantity,
+        pending_quantity: item.pendingQuantity,
+      })),
+    });
+    return toCamelCase<PortfolioOpeningPositionsResponse>(response.data);
   },
 
   async deleteTrade(tradeId: number): Promise<PortfolioDeleteResponse> {
@@ -256,9 +276,10 @@ export const portfolioApi = {
     return toCamelCase<PortfolioImportBrokerListResponse>(response.data);
   },
 
-  async parseCsvImport(broker: string, file: File): Promise<PortfolioImportParseResponse> {
+  async parseCsvImport(broker: string, file: File, priceUnit?: 'vnd' | 'thousand_vnd'): Promise<PortfolioImportParseResponse> {
     const formData = new FormData();
     formData.append('broker', broker);
+    if (priceUnit) formData.append('price_unit', priceUnit);
     formData.append('file', file);
     const response = await apiClient.post<Record<string, unknown>>('/api/v1/portfolio/imports/csv/parse', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
@@ -271,10 +292,12 @@ export const portfolioApi = {
     broker: string,
     file: File,
     dryRun = false,
+    priceUnit?: 'vnd' | 'thousand_vnd',
   ): Promise<PortfolioImportCommitResponse> {
     const formData = new FormData();
     formData.append('account_id', String(accountId));
     formData.append('broker', broker);
+    if (priceUnit) formData.append('price_unit', priceUnit);
     formData.append('dry_run', dryRun ? 'true' : 'false');
     formData.append('file', file);
     const response = await apiClient.post<Record<string, unknown>>('/api/v1/portfolio/imports/csv/commit', formData, {

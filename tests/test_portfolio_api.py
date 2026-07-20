@@ -179,6 +179,86 @@ class PortfolioApiTestCase(unittest.TestCase):
         self.assertAlmostEqual(account_snapshot["total_market_value"], 11000.0, places=6)
         self.assertAlmostEqual(account_snapshot["total_equity"], 11000.0, places=6)
 
+    def test_vn_account_and_tplus_snapshot_contract(self) -> None:
+        create_resp = self.client.post(
+            "/api/v1/portfolio/accounts",
+            json={"name": "VN Main", "broker": "SSI", "market": "vn", "base_currency": "VND"},
+        )
+        self.assertEqual(create_resp.status_code, 200, create_resp.text)
+        account_id = create_resp.json()["id"]
+
+        trade_resp = self.client.post(
+            "/api/v1/portfolio/trades",
+            json={
+                "account_id": account_id,
+                "symbol": "FPT",
+                "trade_date": "2026-01-02",
+                "side": "buy",
+                "quantity": 100,
+                "price": 100000,
+                "market": "vn",
+                "currency": "VND",
+            },
+        )
+        self.assertEqual(trade_resp.status_code, 200, trade_resp.text)
+        self._save_close("FPT", date(2026, 1, 5), 105000.0)
+
+        snapshot_resp = self.client.get(
+            "/api/v1/portfolio/snapshot",
+            params={"account_id": account_id, "as_of": "2026-01-05"},
+        )
+        self.assertEqual(snapshot_resp.status_code, 200, snapshot_resp.text)
+        position = snapshot_resp.json()["accounts"][0]["positions"][0]
+        self.assertEqual(position["sellable_quantity"], 0.0)
+        self.assertEqual(position["pending_quantity"], 100.0)
+        self.assertEqual(position["next_settlement_date"], "2026-01-06")
+
+    def test_vn_opening_positions_api_preserves_cash(self) -> None:
+        account_resp = self.client.post(
+            "/api/v1/portfolio/accounts",
+            json={"name": "VN Opening", "market": "vn", "base_currency": "VND"},
+        )
+        account_id = account_resp.json()["id"]
+        import_resp = self.client.post(
+            "/api/v1/portfolio/opening-positions",
+            json={
+                "account_id": account_id,
+                "as_of": "2026-01-05",
+                "import_id": "api-opening-001",
+                "holdings": [{
+                    "symbol": "FPT", "quantity": 100, "avg_cost": 100000,
+                    "sellable_quantity": 70, "pending_quantity": 30,
+                }],
+            },
+        )
+        self.assertEqual(import_resp.status_code, 200, import_resp.text)
+        self.assertEqual(import_resp.json()["inserted_events"], 2)
+        self._save_close("FPT", date(2026, 1, 5), 105000.0)
+
+        snapshot_resp = self.client.get(
+            "/api/v1/portfolio/snapshot",
+            params={"account_id": account_id, "as_of": "2026-01-05", "cost_method": "avg"},
+        )
+        self.assertEqual(snapshot_resp.status_code, 200, snapshot_resp.text)
+        account = snapshot_resp.json()["accounts"][0]
+        self.assertEqual(account["total_cash"], 0.0)
+        self.assertEqual(account["positions"][0]["sellable_quantity"], 70.0)
+        self.assertEqual(account["positions"][0]["pending_quantity"], 30.0)
+
+        duplicate_resp = self.client.post(
+            "/api/v1/portfolio/opening-positions",
+            json={
+                "account_id": account_id,
+                "as_of": "2026-01-05",
+                "import_id": "api-opening-002",
+                "holdings": [{
+                    "symbol": "HPG", "quantity": 10, "avg_cost": 30000,
+                    "sellable_quantity": 10, "pending_quantity": 0,
+                }],
+            },
+        )
+        self.assertEqual(duplicate_resp.status_code, 409)
+
     def test_delete_account_deactivates_without_hard_deleting(self) -> None:
         create_resp = self.client.post(
             "/api/v1/portfolio/accounts",
@@ -864,6 +944,40 @@ class PortfolioApiTestCase(unittest.TestCase):
         self.assertIn("huatai", brokers)
         self.assertIn("citic", brokers)
         self.assertIn("cmb", brokers)
+        self.assertIn("generic_vn", brokers)
+
+    def test_generic_vn_csv_requires_price_unit_and_exposes_settlement(self) -> None:
+        csv_content = (
+            "Ngày giao dịch,Mã CK,Mua/Bán,Khối lượng khớp,Giá khớp,Ngày thanh toán\n"
+            "29/04/2026,FPT,Mua,100,100,05/05/2026\n"
+        ).encode("utf-8")
+        missing_unit = self.client.post(
+            "/api/v1/portfolio/imports/csv/parse",
+            data={"broker": "generic_vn"},
+            files={"file": ("vn.csv", csv_content, "text/csv")},
+        )
+        self.assertEqual(missing_unit.status_code, 400, missing_unit.text)
+
+        response = self.client.post(
+            "/api/v1/portfolio/imports/csv/parse",
+            data={"broker": "generic_vn", "price_unit": "thousand_vnd"},
+            files={"file": ("vn.csv", csv_content, "text/csv")},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()["records"][0]
+        self.assertEqual(item["price"], 100000.0)
+        self.assertEqual(item["market"], "vn")
+        self.assertEqual(item["settlement_date"], "2026-05-05")
+        self.assertFalse(item["settlement_estimated"])
+
+    def test_csv_import_rejects_files_over_limit(self) -> None:
+        response = self.client.post(
+            "/api/v1/portfolio/imports/csv/parse",
+            data={"broker": "huatai"},
+            files={"file": ("large.csv", b"x" * (5 * 1024 * 1024 + 1), "text/csv")},
+        )
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("5 MiB", response.text)
 
     def test_event_list_invalid_page_size_returns_422(self) -> None:
         resp = self.client.get("/api/v1/portfolio/trades", params={"page_size": 101})

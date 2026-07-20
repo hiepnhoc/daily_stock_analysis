@@ -79,6 +79,20 @@ class _FakeRiskService:
                     {"symbol": "000001", "weight_pct": 12.3},
                 ],
             },
+            "sector_concentration": {
+                "alert": True,
+                "top_weight_pct": 55.0,
+                "top_sectors": [{"sector": "Công nghệ", "weight_pct": 55.0}],
+                "coverage": {"classified_count": 1},
+            },
+            "inventory_liquidity": {
+                "sellable_quantity": 60.0,
+                "pending_quantity": 40.0,
+                "pending_weight_pct": 40.0,
+                "pending_alert": True,
+                "liquidity": {"alert_count": 1},
+                "action_plan": [{"code": "pending_inventory", "severity": "high", "action": "Không tính hàng chờ về vào phần bán được."}],
+            },
             "drawdown": {
                 "alert": False,
                 "max_drawdown_pct": 8.7,
@@ -109,6 +123,9 @@ class TestGetPortfolioSnapshotTool(unittest.TestCase):
         self.assertNotIn("positions", account)
         self.assertEqual(account["position_count"], 2)
         self.assertEqual(account["top_positions"][0]["symbol"], "600519")
+        self.assertEqual(result["risk"]["inventory_liquidity"]["pending_quantity"], 40.0)
+        self.assertEqual(result["risk"]["inventory_liquidity"]["liquidity_alert_count"], 1)
+        self.assertEqual(result["risk"]["sector_concentration"]["top_sectors"][0]["sector"], "Công nghệ")
 
     @patch("src.services.portfolio_service.PortfolioService", _FakePortfolioService)
     @patch("src.services.portfolio_risk_service.PortfolioRiskService", _FakeRiskService)

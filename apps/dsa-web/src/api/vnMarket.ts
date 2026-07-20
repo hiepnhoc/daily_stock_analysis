@@ -136,6 +136,7 @@ export interface VNPortfolioItem extends VNPortfolioHolding {
   todayPlan: string[];
   pendingPlan: string;
   riskFlags: string[];
+  newsCatalyst?: VNNewsCatalyst | null;
 }
 
 export interface VNPortfolioCheckResponse {
@@ -238,8 +239,11 @@ export const vnMarketApi = {
     return data;
   },
 
-  async checkPortfolio(holdings: VNPortfolioHolding[]): Promise<VNPortfolioCheckResponse> {
-    const { data } = await apiClient.post<VNPortfolioCheckResponse>('/api/v1/vn/portfolio-check', { holdings });
+  async checkPortfolio(holdings: VNPortfolioHolding[], options: { includeNews?: boolean } = {}): Promise<VNPortfolioCheckResponse> {
+    const { data } = await apiClient.post<VNPortfolioCheckResponse>('/api/v1/vn/portfolio-check', {
+      holdings,
+      includeNews: options.includeNews ?? false,
+    });
     return data;
   },
 

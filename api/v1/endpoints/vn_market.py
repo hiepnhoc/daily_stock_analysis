@@ -40,6 +40,7 @@ class VNPortfolioHolding(BaseModel):
 
 class VNPortfolioCheckRequest(BaseModel):
     holdings: List[VNPortfolioHolding] = Field(default_factory=list)
+    includeNews: bool = False
 
 
 class VNJournalCreateRequest(BaseModel):
@@ -95,7 +96,10 @@ def ticker_chart(ticker: str, days: int = 160):
 
 @router.post("/portfolio-check")
 def portfolio_check(payload: VNPortfolioCheckRequest):
-    return vn_market_service.portfolio_check([holding.model_dump() for holding in payload.holdings])
+    return vn_market_service.portfolio_check(
+        [holding.model_dump() for holding in payload.holdings],
+        include_news=payload.includeNews,
+    )
 
 
 @router.post("/sector-flow")

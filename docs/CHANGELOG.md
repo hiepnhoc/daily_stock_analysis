@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] VN Portfolio settlement 使用版本化 HOSE/HNX 2026 交易日历计算 T+2；已覆盖年份跳过官方节假日并返回 `settlement_estimated=false`，未知年份保留工作日 fallback 与 estimated 标记。
+- [新功能] Portfolio CSV 导入新增不绑定券商的 `generic_vn` 模板，支持 UTF-8 BOM/CP1258、越南日期与数字格式、结算日 metadata、preview/dedup/market guard，并要求明确选择 VND 实价或千 VND；未宣称兼容 SSI/VPS/TCBS/VNDIRECT 私有导出格式。
+- [新功能] Portfolio 风险报告新增 sellable/pending T+ 库存、共享 VN 行业分类、近 20 期成交额覆盖、20% 参与率下的预计退出天数与确定性 action plan；Web 新增 “T+ inventory & liquidity” 卡片。
+- [修复] CSV broker 列表加载不再因选择变化重复请求并重置当前模板；静态 OpenAPI spec 已与新增 Portfolio risk contract 同步。
+- [测试] Backend full offline suite `3819 passed, 2 deselected`；frontend full suite `831 passed, 2 skipped`；ESLint 0 errors、production build 通过（3226 modules）。
+
+- [修复] 前端路由边界测试与实际 `/vn-portfolio` 导航及越南语错误标题保持一致，并为重复持仓行生成唯一 React key；完整前端测试恢复为全绿。
+- [新功能] Persistent Portfolio ledger 新增 `market=vn`/VND、T+2 settlement lot、sellable/pending quantity、unsettled oversell guard，以及不影响 cash 的 opening-position import；VN Portfolio 可从 ledger 导入/回载，localStorage 降级为临时草稿。
+- [改进] Portfolio snapshot cache 持久化 sellable/pending/next settlement 与 lot sellable date，并为既有 SQLite database 提供幂等 add-column migration；迁移前可保留数据库备份。
+- [改进] VN Market Agent Reach news/catalyst adapter 可在最小 service PATH 下解析用户级 `mcporter`，并行抓取独立来源，新增 ticker/window TTL cache，并将来源、原文链接和 fail-open 状态接入 Portfolio T+ 卡片。
+- [修复] VN Market regime 按 EMA60 bearish、EMA20 cautious、EMA20 bullish 的风险优先级判定，避免指数低于 EMA60 时被较短周期条件错误覆盖为 bullish。
+- [文档] 新增 VN source reuse/adaptation audit，明确 indicator、ActionPlan、portfolio ledger、risk、backtest 与 news pipeline 的 reuse/adapt/reject 边界。
 - [新功能] VN Market 单股 Analyze 卡片新增 Agent Reach/Jina public-web news/catalyst 检查，并在 Web UI 展示来源、窗口、风险和候选新闻。
 - [改进] 通知报告的分析结果摘要不再展开 AI 决策信号明细，完整信号保留在个股详情和单股报告中。
 - [新功能] #1595 P1.5 新增 Provider Cache Capability Registry，按 provider、api surface、gateway 和 verification status 建模 prompt cache 能力，未知 OpenAI-compatible route 默认 telemetry only。

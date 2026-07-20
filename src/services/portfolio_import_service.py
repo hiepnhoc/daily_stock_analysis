@@ -7,7 +7,7 @@ import hashlib
 import io
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -25,12 +25,14 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class CsvParserSpec:
-    """CSV parser specification for one broker."""
+    """CSV parser specification for one broker or normalized market template."""
 
     broker: str
     aliases: Tuple[str, ...]
     display_name: str
     column_hints: Dict[str, Tuple[str, ...]]
+    default_market: Optional[str] = None
+    default_currency: Optional[str] = None
 
 
 DEFAULT_PARSER_SPECS: Tuple[CsvParserSpec, ...] = (
@@ -72,6 +74,24 @@ DEFAULT_PARSER_SPECS: Tuple[CsvParserSpec, ...] = (
             "price": ("成交价", "成交价格", "成交均价", "均价"),
             "trade_uid": ("流水号", "成交编号", "成交序号"),
         },
+    ),
+    CsvParserSpec(
+        broker="generic_vn",
+        aliases=(),
+        display_name="Việt Nam (CSV chung, không gắn broker)",
+        column_hints={
+            "trade_date": ("Ngày giao dịch", "Ngày khớp", "Ngày GD", "Ngày"),
+            "settlement_date": ("Ngày thanh toán", "Ngày về", "Ngày CK về"),
+            "symbol": ("Mã CK", "Mã chứng khoán", "Mã cổ phiếu", "Mã"),
+            "side": ("Mua/Bán", "Loại giao dịch", "Chiều giao dịch", "Lệnh", "Loại lệnh"),
+            "quantity": ("Khối lượng khớp", "KL khớp", "Khối lượng", "Số lượng"),
+            "price": ("Giá khớp", "Giá thực hiện", "Giá giao dịch", "Giá"),
+            "trade_uid": ("Số lệnh", "Số hiệu lệnh", "Mã giao dịch", "ID giao dịch"),
+            "fee": ("Phí giao dịch", "Phí", "Phí môi giới"),
+            "tax": ("Thuế", "Thuế giao dịch", "Thuế bán"),
+        },
+        default_market="vn",
+        default_currency="VND",
     ),
 )
 
@@ -122,6 +142,8 @@ class PortfolioImportService:
             aliases=new_aliases,
             display_name=spec.display_name or broker,
             column_hints=dict(spec.column_hints or {}),
+            default_market=spec.default_market,
+            default_currency=spec.default_currency,
         )
         for alias in self._parser_registry[broker].aliases:
             self._broker_alias_map[alias] = broker
@@ -145,30 +167,43 @@ class PortfolioImportService:
         *,
         broker: str,
         content: bytes,
+        price_unit: Optional[str] = None,
     ) -> Dict[str, Any]:
         broker_norm = self._normalize_broker(broker)
         parser_spec = self._parser_registry[broker_norm]
+        resolved_price_unit = self._normalize_price_unit(price_unit, required=parser_spec.default_market == "vn")
+        if not content:
+            raise ValueError("CSV file is empty")
         df = self._read_csv(content)
+        self._validate_required_columns(df=df, parser_spec=parser_spec)
 
         records: List[Dict[str, Any]] = []
         skipped = 0
         errors: List[str] = []
 
         for idx, row in df.iterrows():
-            normalized = self._normalize_trade_row(row=row, parser_spec=parser_spec)
+            normalized = self._normalize_trade_row(
+                row=row,
+                parser_spec=parser_spec,
+                price_unit=resolved_price_unit,
+            )
             if normalized is None:
                 skipped += 1
                 continue
             try:
-                # Keep a stable line-level marker so repeated imports of the same
-                # file remain idempotent, while identical split fills on separate
-                # CSV lines do not collapse into one dedup key.
                 normalized["_source_line_number"] = int(idx) + 2
-                normalized["dedup_hash"] = self._build_dedup_hash(normalized)
                 records.append(normalized)
             except Exception as exc:  # pragma: no cover - defensive path
                 skipped += 1
                 errors.append(f"row={idx + 1}: {exc}")
+
+        occurrence_counts: Dict[str, int] = {}
+        for record in records:
+            content_key = self._build_dedup_content_key(record)
+            occurrence = occurrence_counts.get(content_key, 0) + 1
+            occurrence_counts[content_key] = occurrence
+            record["_dedup_occurrence"] = occurrence
+            record["dedup_hash"] = self._build_dedup_hash(record)
 
         return {
             "broker": broker_norm,
@@ -188,6 +223,9 @@ class PortfolioImportService:
         dry_run: bool = False,
     ) -> Dict[str, Any]:
         broker_norm = self._normalize_broker(broker)
+        account = self.repo.get_account(account_id)
+        if account is None or not bool(account.is_active):
+            raise ValueError(f"account {account_id} is not active")
 
         inserted_count = 0
         duplicate_count = 0
@@ -198,6 +236,12 @@ class PortfolioImportService:
 
         for i, record in enumerate(records):
             try:
+                record_market = str(record.get("market") or account.market or "").strip().lower()
+                account_market = str(account.market or "").strip().lower()
+                if record_market and account_market and record_market != account_market:
+                    raise ValueError(
+                        f"record market {record_market} does not match account market {account_market}"
+                    )
                 trade_uid = (record.get("trade_uid") or "").strip() or None
                 dedup_hash = (record.get("dedup_hash") or "").strip()
                 if not dedup_hash:
@@ -231,6 +275,14 @@ class PortfolioImportService:
                 else:
                     trade_date_obj = date.fromisoformat(str(trade_date_value))
 
+                settlement_date_value = record.get("settlement_date")
+                if isinstance(settlement_date_value, date):
+                    settlement_date_obj = settlement_date_value
+                elif settlement_date_value:
+                    settlement_date_obj = date.fromisoformat(str(settlement_date_value))
+                else:
+                    settlement_date_obj = None
+
                 self.portfolio_service.record_trade(
                     account_id=account_id,
                     symbol=str(record["symbol"]),
@@ -240,10 +292,12 @@ class PortfolioImportService:
                     price=float(record["price"]),
                     fee=float(record.get("fee", 0.0) or 0.0),
                     tax=float(record.get("tax", 0.0) or 0.0),
-                    market=record.get("market"),
+                    market=record_market or None,
                     currency=record.get("currency"),
                     trade_uid=trade_uid,
                     dedup_hash=dedup_hash_to_use,
+                    settlement_date=settlement_date_obj,
+                    settlement_estimated=record.get("settlement_estimated"),
                     note=(record.get("note") or "").strip() or f"csv_import:{broker_norm}",
                 )
                 inserted_count += 1
@@ -278,8 +332,30 @@ class PortfolioImportService:
         return broker
 
     @staticmethod
+    def _normalize_price_unit(value: Optional[str], *, required: bool) -> Optional[str]:
+        normalized = (value or "").strip().lower()
+        if not normalized:
+            if required:
+                raise ValueError("price_unit is required for generic_vn: vnd or thousand_vnd")
+            return None
+        if normalized not in {"vnd", "thousand_vnd"}:
+            raise ValueError("price_unit must be vnd or thousand_vnd")
+        return normalized
+
+    @staticmethod
+    def _validate_required_columns(*, df: pd.DataFrame, parser_spec: CsvParserSpec) -> None:
+        required = ("trade_date", "symbol", "side", "quantity", "price")
+        missing = [
+            field
+            for field in required
+            if not any(alias in df.columns for alias in parser_spec.column_hints.get(field, ()))
+        ]
+        if missing:
+            raise ValueError(f"CSV missing required columns: {', '.join(missing)}")
+
+    @staticmethod
     def _read_csv(content: bytes) -> pd.DataFrame:
-        for encoding in ("utf-8-sig", "gbk", "gb18030"):
+        for encoding in ("utf-8-sig", "cp1258", "gbk", "gb18030"):
             try:
                 return pd.read_csv(
                     io.BytesIO(content),
@@ -296,6 +372,7 @@ class PortfolioImportService:
         *,
         row: Any,
         parser_spec: CsvParserSpec,
+        price_unit: Optional[str],
     ) -> Optional[Dict[str, Any]]:
         broker_hints = parser_spec.column_hints
 
@@ -335,24 +412,29 @@ class PortfolioImportService:
         if side is None:
             return None
 
-        quantity = self._parse_float(
+        number_parser = self._parse_vn_float if parser_spec.default_market == "vn" else self._parse_float
+        quantity = number_parser(
             self._pick(row, *(broker_hints.get("quantity") or ()), "成交数量", "数量", "成交股数")
         )
-        price = self._parse_float(
+        price = number_parser(
             self._pick(row, *(broker_hints.get("price") or ()), "成交均价", "成交价格", "价格", "成交价", "均价")
         )
         if quantity is None or quantity <= 0 or price is None or price <= 0:
             return None
+        if parser_spec.default_market == "vn" and price_unit == "thousand_vnd":
+            price *= 1000.0
 
         fee = 0.0
-        for col in ("手续费", "佣金", "交易费", "规费", "过户费"):
-            value = self._parse_float(self._pick(row, col))
+        fee_columns = tuple(broker_hints.get("fee") or ()) + ("手续费", "佣金", "交易费", "规费", "过户费")
+        for col in fee_columns:
+            value = number_parser(self._pick(row, col))
             if value is not None:
                 fee += value
 
         tax = 0.0
-        for col in ("印花税", "税费", "其他税费"):
-            value = self._parse_float(self._pick(row, col))
+        tax_columns = tuple(broker_hints.get("tax") or ()) + ("印花税", "税费", "其他税费")
+        for col in tax_columns:
+            value = number_parser(self._pick(row, col))
             if value is not None:
                 tax += value
 
@@ -365,7 +447,9 @@ class PortfolioImportService:
             "委托编号",
             "流水号",
         )
-        currency = self._pick(row, "币种", "货币")
+        currency = self._pick(row, "币种", "货币", "Tiền tệ", "Loại tiền")
+        settlement_date_raw = self._pick(row, *(broker_hints.get("settlement_date") or ()))
+        settlement_date = self._parse_date(settlement_date_raw)
 
         return {
             "trade_date": trade_date_obj,
@@ -376,7 +460,13 @@ class PortfolioImportService:
             "fee": float(fee),
             "tax": float(tax),
             "trade_uid": (str(trade_uid).strip() if trade_uid is not None else None) or None,
-            "currency": (str(currency).strip().upper() if currency is not None else None) or None,
+            "market": parser_spec.default_market,
+            "currency": (
+                (str(currency).strip().upper() if currency is not None else None)
+                or parser_spec.default_currency
+            ),
+            "settlement_date": settlement_date,
+            "settlement_estimated": False if settlement_date is not None else None,
         }
 
     @staticmethod
@@ -401,13 +491,48 @@ class PortfolioImportService:
             return None
 
     @staticmethod
+    def _parse_vn_float(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        text = str(value).strip().replace(" ", "")
+        if not text or text.lower() == "nan":
+            return None
+        # Vietnamese broker exports commonly use dots as thousands separators
+        # and commas as decimal separators. Plain comma-thousands remains
+        # accepted for exports generated with an English locale.
+        if "." in text and "," in text:
+            if text.rfind(",") > text.rfind("."):
+                text = text.replace(".", "").replace(",", ".")
+            else:
+                text = text.replace(",", "")
+        elif "." in text:
+            groups = text.split(".")
+            if len(groups) > 1 and all(len(group) == 3 for group in groups[1:]):
+                text = "".join(groups)
+        elif "," in text:
+            groups = text.split(",")
+            if len(groups) > 1 and all(len(group) == 3 for group in groups[1:]):
+                text = "".join(groups)
+            else:
+                text = text.replace(",", ".")
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+    @staticmethod
     def _parse_date(value: Any) -> Optional[date]:
         if value is None:
             return None
         text = str(value).strip()
         if not text or text.lower() == "nan":
             return None
-        parsed = pd.to_datetime(text, errors="coerce")
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y", "%d-%m-%Y"):
+            try:
+                return datetime.strptime(text[:10], fmt).date()
+            except ValueError:
+                continue
+        parsed = pd.to_datetime(text, errors="coerce", dayfirst=False)
         if pd.isna(parsed):
             return None
         return parsed.date()
@@ -418,8 +543,8 @@ class PortfolioImportService:
         if not text:
             return None
         compact = text.replace(" ", "")
-        buy_exact = {"buy", "b", "买", "买入", "证券买入", "普通买入"}
-        sell_exact = {"sell", "s", "卖", "卖出", "证券卖出", "普通卖出"}
+        buy_exact = {"buy", "b", "买", "买入", "证券买入", "普通买入", "mua"}
+        sell_exact = {"sell", "s", "卖", "卖出", "证券卖出", "普通卖出", "bán", "ban"}
         if compact in buy_exact:
             return "buy"
         if compact in sell_exact:
@@ -431,8 +556,8 @@ class PortfolioImportService:
         return None
 
     @staticmethod
-    def _build_dedup_hash(record: Dict[str, Any]) -> str:
-        payload = "|".join(
+    def _build_dedup_content_key(record: Dict[str, Any]) -> str:
+        return "|".join(
             [
                 str(record.get("trade_date") or ""),
                 str(record.get("symbol") or ""),
@@ -442,7 +567,17 @@ class PortfolioImportService:
                 f"{float(record.get('fee', 0.0)):.8f}",
                 f"{float(record.get('tax', 0.0)):.8f}",
                 str(record.get("currency") or ""),
-                str(record.get("_source_line_number") or record.get("source_line_number") or ""),
+                str(record.get("market") or ""),
+                str(record.get("settlement_date") or ""),
+            ]
+        )
+
+    @classmethod
+    def _build_dedup_hash(cls, record: Dict[str, Any]) -> str:
+        payload = "|".join(
+            [
+                cls._build_dedup_content_key(record),
+                str(record.get("_dedup_occurrence") or 1),
             ]
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()

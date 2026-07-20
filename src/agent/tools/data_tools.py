@@ -203,6 +203,10 @@ def _compact_portfolio_risk(risk: dict, top_n: int = 10) -> dict:
         reverse=True,
     )[:top_n]
     drawdown = risk.get("drawdown", {}) or {}
+    sector_concentration = risk.get("sector_concentration", {}) or {}
+    inventory_liquidity = risk.get("inventory_liquidity", {}) or {}
+    liquidity = inventory_liquidity.get("liquidity", {}) or {}
+    decision_signal_risk = risk.get("decision_signal_risk", {}) or {}
     return {
         "as_of": risk.get("as_of"),
         "currency": risk.get("currency"),
@@ -212,6 +216,20 @@ def _compact_portfolio_risk(risk: dict, top_n: int = 10) -> dict:
             "alert": concentration.get("alert", False),
             "top_weight_pct": concentration.get("top_weight_pct"),
             "top_positions": top_positions,
+        },
+        "sector_concentration": {
+            "alert": sector_concentration.get("alert", False),
+            "top_weight_pct": sector_concentration.get("top_weight_pct"),
+            "top_sectors": list(sector_concentration.get("top_sectors") or [])[:top_n],
+            "coverage": sector_concentration.get("coverage", {}),
+        },
+        "inventory_liquidity": {
+            "sellable_quantity": inventory_liquidity.get("sellable_quantity", 0),
+            "pending_quantity": inventory_liquidity.get("pending_quantity", 0),
+            "pending_weight_pct": inventory_liquidity.get("pending_weight_pct", 0),
+            "pending_alert": inventory_liquidity.get("pending_alert", False),
+            "liquidity_alert_count": liquidity.get("alert_count", 0),
+            "action_plan": list(inventory_liquidity.get("action_plan") or [])[:top_n],
         },
         "drawdown": {
             "alert": drawdown.get("alert", False),
@@ -224,6 +242,12 @@ def _compact_portfolio_risk(risk: dict, top_n: int = 10) -> dict:
             "triggered_count": stop_loss.get("triggered_count", 0),
             "near_count": stop_loss.get("near_count", 0),
             "items": stop_items,
+        },
+        "decision_signal_risk": {
+            "available": decision_signal_risk.get("available", False),
+            "total": decision_signal_risk.get("total", 0),
+            "actions": decision_signal_risk.get("actions", {}),
+            "items": list(decision_signal_risk.get("items") or [])[:top_n],
         },
     }
 

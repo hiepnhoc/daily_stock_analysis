@@ -1716,7 +1716,9 @@ worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_trig
 
 ### 使用行为说明
 
-- CSV 导入内建 `huatai`、`citic`、`cmb` 解析器；若券商列表接口失败，Web 端会自动回退到这些内建选项。
+- CSV 导入内建 `huatai`、`citic`、`cmb`，以及不绑定具体券商的 `generic_vn` 模板。`generic_vn` 只使用已验证的通用越南语列名，不宣称兼容 SSI/VPS/TCBS/VNDIRECT 私有导出格式；只有拿到脱敏 fixture 或正式字段契约后才会增加专用 adapter。
+- `generic_vn` 导入必须明确选择 `vnd` 或 `thousand_vnd`，系统不会根据价格大小猜测单位。CSV 最大 5 MiB，支持 UTF-8 BOM/CP1258、`dd/mm/yyyy`、结算日字段和最多 20 行 Web preview；建议先 dry-run，再写入。
+- VN 买入未提供权威结算日时，使用 checked-in 的 HOSE/HNX/UPCoM 2026 交易日历计算 T+2。已覆盖年份返回 `settlement_estimated=false`；未知年份只跳过周末并保留 estimated 标记。账本按日期建模，不能保证 T+2 当日上午已经可卖。
 - 导入流程会先把 CSV 解析成标准化记录，再逐条提交到持仓账本；遇到忙碌行会计入 `failed_count`，不会因为单行冲突让整批请求整体失败。
 - 删除账户使用软删除语义：默认账户列表、快照、风险、录入入口和事件列表不再显示该账户，但交易、现金流水和公司行动不会被物理清理；如需纠正单条流水，需在账户归档前使用事件列表里的删除修正入口。
 - 交易去重优先使用账户内唯一的 `trade_uid`，缺失时回退到基于日期、代码、方向、数量、价格、费用、税费、币种的确定性哈希。
@@ -1724,10 +1726,11 @@ worker 会把 `triggered`、`skipped`、`degraded`、`failed` 写入 `alert_trig
 - 持仓快照的 `positions[]` 会返回 `price_source`、`price_date`、`price_stale`、`price_available` 等价格元信息；当天快照会先尝试实时行情，实时价不可用或非正值时再回退到 `as_of` 当天或之前最近的历史收盘价，历史 `as_of` 快照不会拉取实时价，也不会再把成本价静默当作现价；缺价持仓会标记 `price_available=false` 并从市值与未实现盈亏汇总中排除。
 - 汇率刷新会先尝试在线源；若在线获取失败，则回退到最近一次缓存并标记 `is_stale=true`，避免快照和风险页整体不可用。
 - 当 `PORTFOLIO_FX_UPDATE_ENABLED=false` 时，手动刷新接口会明确返回“在线刷新已禁用”，页面不会误导为“当前没有可刷新的汇率对”。
-- 风险摘要包含集中度、回撤、止损接近度等信息；`sector_concentration` 会优先尝试按板块归类，失败时降级到 `UNCLASSIFIED`，不会阻断风险结果返回。
+- 风险摘要包含集中度、回撤、止损接近度等信息；`sector_concentration` 对 VN 复用同一份本地行业 taxonomy，未知代码仍降级到 `UNCLASSIFIED`，不会阻断结果。
+- `inventory_liquidity` 明确汇总 sellable/pending、pending 市值占比与 action plan；对 VN 持仓使用最近最多 20 个交易日的成交额估算，在 20% participation rate 下计算退出天数。数据不足时返回 unavailable/data-missing，不伪造可成交能力；高 pending 或低流动性只触发减仓/等待提示，不会自动下单。
 
 ### Agent 读取持仓
 
-- Agent 可通过 `get_portfolio_snapshot` 获取面向账户的紧凑持仓摘要，默认包含精简风险块，适合控制 Token 开销。
+- Agent 可通过 `get_portfolio_snapshot` 获取面向账户的紧凑持仓摘要，默认包含集中度、行业集中度、sellable/pending、liquidity action plan、回撤、止损和 defensive signal 风险块，适合控制 Token 开销。
 - 可选参数包括 `account_id`、`cost_method`、`as_of`、`include_positions`、`include_risk`。
 - 若风险块生成失败，快照仍会返回；若当前环境未启用持仓模块，工具会返回结构化 `not_supported`。

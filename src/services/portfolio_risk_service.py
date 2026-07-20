@@ -12,10 +12,14 @@ from src.repositories.portfolio_repo import PortfolioRepository
 from src.services.decision_signal_service import DecisionSignalService
 from src.services.decision_signal_summary import summarize_decision_signal
 from src.services.portfolio_service import PortfolioService
+from src.vn.taxonomy import resolve_vn_sector
 
 logger = logging.getLogger(__name__)
 
 DEFENSIVE_DECISION_SIGNAL_ACTIONS = ("sell", "reduce", "alert")
+VN_PENDING_ALERT_PCT = 25.0
+VN_LIQUIDITY_PARTICIPATION_RATE = 0.20
+VN_LIQUIDITY_MAX_DAYS = 3.0
 
 
 class PortfolioRiskService:
@@ -82,6 +86,7 @@ class PortfolioRiskService:
             lookback_days=thresholds["lookback_days"],
         )
         stop_loss = self._build_stop_loss(snapshot, thresholds)
+        inventory_liquidity = self._build_inventory_liquidity(snapshot, as_of_date=as_of_date)
         decision_signal_risk = self._build_decision_signal_risk(snapshot)
 
         return {
@@ -94,7 +99,113 @@ class PortfolioRiskService:
             "sector_concentration": sector_concentration,
             "drawdown": drawdown,
             "stop_loss": stop_loss,
+            "inventory_liquidity": inventory_liquidity,
             "decision_signal_risk": decision_signal_risk,
+        }
+
+    def _build_inventory_liquidity(
+        self,
+        snapshot: Dict[str, Any],
+        *,
+        as_of_date: date,
+    ) -> Dict[str, Any]:
+        total_mv = float(snapshot.get("total_market_value", 0.0) or 0.0)
+        total_quantity = 0.0
+        sellable_quantity = 0.0
+        pending_quantity = 0.0
+        pending_market_value = 0.0
+        liquidity_items: List[Dict[str, Any]] = []
+
+        for account in snapshot.get("accounts", []) or []:
+            for position in account.get("positions", []) or []:
+                market = str(position.get("market") or account.get("market") or "").strip().lower()
+                if market != "vn":
+                    continue
+                symbol = str(position.get("symbol") or "").strip().upper()
+                quantity = float(position.get("quantity", 0.0) or 0.0)
+                sellable = float(position.get("sellable_quantity", quantity) or 0.0)
+                pending = float(position.get("pending_quantity", max(0.0, quantity - sellable)) or 0.0)
+                market_value = float(position.get("market_value_base", 0.0) or 0.0)
+                total_quantity += quantity
+                sellable_quantity += sellable
+                pending_quantity += pending
+                if quantity > 0:
+                    valuation_currency = str(
+                        position.get("valuation_currency") or account.get("base_currency") or snapshot.get("currency") or "CNY"
+                    )
+                    pending_value_account = market_value * pending / quantity
+                    pending_value_report, _, _ = self.portfolio_service.convert_amount(
+                        amount=pending_value_account,
+                        from_currency=valuation_currency,
+                        to_currency=str(snapshot.get("currency") or "CNY"),
+                        as_of_date=as_of_date,
+                    )
+                    pending_market_value += pending_value_report
+
+                liquidity = self.repo.get_recent_liquidity(code=symbol, as_of=as_of_date, sessions=20)
+                avg_value = liquidity.get("avg_traded_value")
+                days_to_liquidate = None
+                if avg_value is not None and float(avg_value) > 0:
+                    daily_capacity = float(avg_value) * VN_LIQUIDITY_PARTICIPATION_RATE
+                    days_to_liquidate = market_value / daily_capacity if daily_capacity > 0 else None
+                liquidity_items.append({
+                    "account_id": account.get("account_id"),
+                    "symbol": symbol,
+                    "market_value_base": round(market_value, 6),
+                    "avg_traded_value_20": round(float(avg_value), 6) if avg_value is not None else None,
+                    "amount_coverage": int(liquidity.get("amount_coverage", 0) or 0),
+                    "latest_date": liquidity["latest_date"].isoformat() if liquidity.get("latest_date") else None,
+                    "participation_rate": VN_LIQUIDITY_PARTICIPATION_RATE,
+                    "days_to_liquidate": round(days_to_liquidate, 4) if days_to_liquidate is not None else None,
+                    "available": avg_value is not None,
+                    "is_alert": bool(days_to_liquidate is not None and days_to_liquidate > VN_LIQUIDITY_MAX_DAYS),
+                })
+
+        pending_weight = (pending_market_value / total_mv * 100.0) if total_mv > 0 else 0.0
+        pending_alert = pending_weight >= VN_PENDING_ALERT_PCT
+        liquidity_items.sort(
+            key=lambda item: (
+                item["days_to_liquidate"] is not None,
+                item["days_to_liquidate"] or 0.0,
+            ),
+            reverse=True,
+        )
+        liquidity_alerts = [item for item in liquidity_items if item["is_alert"]]
+        action_plan: List[Dict[str, str]] = []
+        if pending_alert:
+            action_plan.append({
+                "code": "pending_inventory",
+                "severity": "high",
+                "action": "Không dùng cổ phiếu chờ về trong kế hoạch bán; giảm mua mới nếu cần thanh khoản T+.",
+            })
+        if liquidity_alerts:
+            action_plan.append({
+                "code": "liquidity_capacity",
+                "severity": "high",
+                "action": "Chia lệnh/giảm size; không giả định thoát toàn bộ vị thế trong một phiên ở mức 20% GTGD bình quân.",
+            })
+        if liquidity_items and any(not item["available"] for item in liquidity_items):
+            action_plan.append({
+                "code": "liquidity_data_missing",
+                "severity": "medium",
+                "action": "Chưa đủ dữ liệu GTGD20; không nâng size dựa trên giả định thanh khoản chưa kiểm chứng.",
+            })
+
+        return {
+            "total_quantity": round(total_quantity, 6),
+            "sellable_quantity": round(sellable_quantity, 6),
+            "pending_quantity": round(pending_quantity, 6),
+            "pending_market_value_base": round(pending_market_value, 6),
+            "pending_weight_pct": round(pending_weight, 4),
+            "pending_alert_threshold_pct": VN_PENDING_ALERT_PCT,
+            "pending_alert": pending_alert,
+            "liquidity": {
+                "participation_rate": VN_LIQUIDITY_PARTICIPATION_RATE,
+                "max_days_threshold": VN_LIQUIDITY_MAX_DAYS,
+                "alert_count": len(liquidity_alerts),
+                "items": liquidity_items,
+            },
+            "action_plan": action_plan,
         }
 
     def _build_decision_signal_risk(
@@ -391,6 +502,16 @@ class PortfolioRiskService:
     ) -> str:
         cache_key = (symbol, market)
         if cache_key in board_cache:
+            return board_cache[cache_key]
+
+        if market == "vn":
+            sector_name = resolve_vn_sector(symbol)
+            if sector_name:
+                coverage["classified_count"] += 1
+                board_cache[cache_key] = sector_name
+            else:
+                coverage["unclassified_count"] += 1
+                board_cache[cache_key] = "UNCLASSIFIED"
             return board_cache[cache_key]
 
         if market != "cn":

@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 class PortfolioAccountCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=64)
     broker: Optional[str] = Field(None, max_length=64)
-    market: Literal["cn", "hk", "us", "jp", "kr"] = "cn"
+    market: Literal["cn", "hk", "us", "jp", "kr", "vn"] = "cn"
     base_currency: str = Field("CNY", min_length=3, max_length=8)
     owner_id: Optional[str] = Field(None, max_length=64)
 
@@ -20,7 +20,7 @@ class PortfolioAccountCreateRequest(BaseModel):
 class PortfolioAccountUpdateRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=64)
     broker: Optional[str] = Field(None, max_length=64)
-    market: Optional[Literal["cn", "hk", "us", "jp", "kr"]] = None
+    market: Optional[Literal["cn", "hk", "us", "jp", "kr", "vn"]] = None
     base_currency: Optional[str] = Field(None, min_length=3, max_length=8)
     owner_id: Optional[str] = Field(None, max_length=64)
     is_active: Optional[bool] = None
@@ -51,10 +51,34 @@ class PortfolioTradeCreateRequest(BaseModel):
     price: float = Field(..., gt=0)
     fee: float = Field(0.0, ge=0)
     tax: float = Field(0.0, ge=0)
-    market: Optional[Literal["cn", "hk", "us", "jp", "kr"]] = None
+    market: Optional[Literal["cn", "hk", "us", "jp", "kr", "vn"]] = None
     currency: Optional[str] = Field(None, min_length=3, max_length=8)
     trade_uid: Optional[str] = Field(None, max_length=128)
+    settlement_date: Optional[date] = None
+    settlement_estimated: Optional[bool] = None
     note: Optional[str] = Field(None, max_length=255)
+
+
+class PortfolioOpeningPositionItem(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=16)
+    quantity: float = Field(..., gt=0)
+    avg_cost: float = Field(..., gt=0)
+    sellable_quantity: float = Field(..., ge=0)
+    pending_quantity: float = Field(..., ge=0)
+
+
+class PortfolioOpeningPositionsRequest(BaseModel):
+    account_id: int
+    as_of: date
+    import_id: str = Field(..., min_length=1, max_length=64)
+    holdings: List[PortfolioOpeningPositionItem] = Field(..., min_length=1, max_length=200)
+
+
+class PortfolioOpeningPositionsResponse(BaseModel):
+    account_id: int
+    import_id: str
+    inserted_events: int
+    holdings: int
 
 
 class PortfolioCashLedgerCreateRequest(BaseModel):
@@ -71,7 +95,7 @@ class PortfolioCorporateActionCreateRequest(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=16)
     effective_date: date
     action_type: Literal["cash_dividend", "split_adjustment"]
-    market: Optional[Literal["cn", "hk", "us", "jp", "kr"]] = None
+    market: Optional[Literal["cn", "hk", "us", "jp", "kr", "vn"]] = None
     currency: Optional[str] = Field(None, min_length=3, max_length=8)
     cash_dividend_per_share: Optional[float] = Field(None, ge=0)
     split_ratio: Optional[float] = Field(None, gt=0)
@@ -99,6 +123,9 @@ class PortfolioTradeListItem(BaseModel):
     price: float
     fee: float
     tax: float
+    settlement_date: Optional[str] = None
+    settlement_estimated: bool = False
+    affects_cash: bool = True
     note: Optional[str] = None
     created_at: Optional[str] = None
 
@@ -166,6 +193,10 @@ class PortfolioPositionItem(BaseModel):
     price_date: Optional[str] = None
     price_stale: bool = False
     price_available: bool = True
+    sellable_quantity: float = 0.0
+    pending_quantity: float = 0.0
+    next_settlement_date: Optional[str] = None
+    settlement_estimated: bool = False
 
 
 class PortfolioPositionAnalysisRequest(BaseModel):
@@ -220,7 +251,10 @@ class PortfolioImportTradeItem(BaseModel):
     tax: float
     trade_uid: Optional[str] = None
     dedup_hash: str
+    market: Optional[str] = None
     currency: Optional[str] = None
+    settlement_date: Optional[str] = None
+    settlement_estimated: Optional[bool] = None
 
 
 class PortfolioImportParseResponse(BaseModel):
@@ -287,4 +321,5 @@ class PortfolioRiskResponse(BaseModel):
     sector_concentration: Dict[str, Any] = Field(default_factory=dict)
     drawdown: Dict[str, Any] = Field(default_factory=dict)
     stop_loss: Dict[str, Any] = Field(default_factory=dict)
+    inventory_liquidity: Dict[str, Any] = Field(default_factory=dict)
     decision_signal_risk: PortfolioDecisionSignalRiskBlock = Field(default_factory=PortfolioDecisionSignalRiskBlock)

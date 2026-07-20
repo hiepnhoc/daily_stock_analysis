@@ -65,6 +65,20 @@ def test_bearish_market_downgrades_vn_action_plan() -> None:
     assert any("VNINDEX" in flag or "thị trường" in flag.lower() for flag in plan.riskFlags)
 
 
+def test_market_context_does_not_overwrite_bearish_when_close_is_above_ema20_but_below_ema60() -> None:
+    from src.vn.services.vn_market_service import build_market_context
+
+    with patch("src.vn.services.vn_market_service.provider.get_daily_bars", return_value=_sample_ohlcv()), \
+         patch(
+             "src.vn.services.vn_market_service.latest_technical_snapshot",
+             return_value={"close": 95.0, "ema20": 90.0, "ema60": 100.0, "rsi14": 55.0},
+         ):
+        market = build_market_context()
+
+    assert market.marketBias == "bearish"
+    assert any("EMA60" in warning for warning in market.warnings)
+
+
 def test_vn_scan_api_returns_action_plans(tmp_path: Path) -> None:
     static_dir = tmp_path / "static"
     static_dir.mkdir()
@@ -207,6 +221,48 @@ def test_portfolio_tplus_endpoint_splits_sellable_pending_and_pl(tmp_path: Path)
     assert item["pendingQty"] == 400
     assert item["todayPlan"]
     assert "hàng về" in item["pendingPlan"]
+
+
+def test_portfolio_tplus_can_include_agent_reach_news(tmp_path: Path) -> None:
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    from src.vn.schemas import DataQuality, NewsCatalyst, NewsItem
+
+    news = NewsCatalyst(
+        checked=True,
+        source="agent-reach:multi-source",
+        freshnessWindow="7d",
+        sentiment="positive",
+        catalysts=[
+            NewsItem(
+                title="HPG công bố thông tin mới",
+                source="CafeF",
+                url="https://example.com/hpg",
+                impact="medium",
+            )
+        ],
+        dataQuality=DataQuality(status="available", source="agent-reach:multi-source"),
+    )
+    with patch("src.vn.data.provider.get_daily_bars", return_value=_sample_ohlcv()), \
+         patch("src.vn.data.ssi_iboard.fetch_live_quote", return_value={"price": 31000.0, "source": "ssi_iboard"}), \
+         patch("src.vn.services.vn_market_service.fetch_news_catalyst", return_value=news):
+        client = TestClient(create_app(static_dir=static_dir))
+        response = client.post(
+            "/api/v1/vn/portfolio-check",
+            json={
+                "includeNews": True,
+                "holdings": [
+                    {"ticker": "HPG", "quantity": 1000, "avgCost": 30.0, "sellableQty": 600, "pendingQty": 400}
+                ],
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["newsCatalyst"]["checked"] is True
+    assert item["newsCatalyst"]["catalysts"][0]["url"] == "https://example.com/hpg"
 
 
 def test_portfolio_endpoint_rejects_invalid_holdings_before_service_call(tmp_path: Path) -> None:

@@ -1,18 +1,22 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import concurrent.futures
 import html
 import json
 import os
 import re
 import shutil
 import subprocess
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, List
 
 from src.vn.schemas import DataQuality, NewsCatalyst, NewsItem, NewsSourceStatus
@@ -24,6 +28,8 @@ _JINA_READER_ROUTE = "agent-reach:jina-reader"
 _EXA_ROUTE = "agent-reach:exa:mcporter"
 _DIRECT_RSS_ROUTE = "agent-reach:rss:direct"
 _DEFAULT_TIMEOUT_SECONDS = 5
+_NEWS_CACHE: dict[tuple[str, int], tuple[float, NewsCatalyst]] = {}
+_NEWS_CACHE_LOCK = threading.Lock()
 _SEARCH_SOURCES = ("CafeF", "Vietstock", "VNDIRECT", "SSI", "HoSE", "VnEconomy", "Tuổi Trẻ", "Lao Động", "Tin nhanh chứng khoán")
 _DIRECT_RSS_FEEDS = (
     ("CafeF", "https://cafef.vn/thi-truong-chung-khoan.rss"),
@@ -62,6 +68,38 @@ class SourceResult:
 
 def _enabled() -> bool:
     return os.getenv("VN_NEWS_CATALYST_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _resolve_tool(name: str, *, env_var: str | None = None) -> str | None:
+    """Resolve user-installed Agent Reach helpers even under a minimal service PATH."""
+    configured = os.getenv(env_var, "").strip() if env_var else ""
+    candidates = [configured, shutil.which(name)]
+    home = Path.home()
+    candidates.extend(
+        [
+            str(home / ".npm-global" / "bin" / name),
+            str(home / ".local" / "bin" / name),
+            str(home / ".cargo" / "bin" / name),
+            f"/opt/homebrew/bin/{name}",
+            f"/usr/local/bin/{name}",
+        ]
+    )
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            return str(Path(candidate))
+    return None
+
+
+def clear_news_cache() -> None:
+    with _NEWS_CACHE_LOCK:
+        _NEWS_CACHE.clear()
+
+
+def _cache_ttl_seconds() -> int:
+    try:
+        return max(0, int(os.getenv("VN_NEWS_CACHE_TTL_SECONDS", "900")))
+    except ValueError:
+        return 900
 
 
 def _fetch_text(url: str, timeout: int = _DEFAULT_TIMEOUT_SECONDS) -> str:
@@ -245,7 +283,8 @@ def _direct_rss_items(ticker: str) -> List[NewsItem]:
 
 
 def _exa_items(ticker: str, days: int) -> SourceResult:
-    if not shutil.which("mcporter"):
+    mcporter = _resolve_tool("mcporter", env_var="VN_NEWS_MCPORTER_PATH")
+    if not mcporter:
         return SourceResult(
             status=NewsSourceStatus(name="exa", status="missing_tool", items=0, route=_EXA_ROUTE, warning="mcporter_not_found"),
             items=[],
@@ -253,8 +292,8 @@ def _exa_items(ticker: str, days: int) -> SourceResult:
     query = f'{ticker.upper()} cổ phiếu tin mới {days} ngày khởi tố giảm sàn CafeF Vietstock VnEconomy Tin nhanh chứng khoán'
     expr = f'exa.web_search_exa(query: "{query}", numResults: 8)'
     try:
-        completed = subprocess.run(  # noqa: S603 - fixed executable + public search query only
-            ["mcporter", "call", expr],
+        completed = subprocess.run(  # noqa: S603 - resolved executable + public search query only
+            [mcporter, "call", expr],
             check=False,
             capture_output=True,
             text=True,
@@ -293,7 +332,7 @@ def _sentiment_for(items: List[NewsItem]) -> str:
     return "neutral"
 
 
-def fetch_news_catalyst(ticker: str, days: int = 7) -> NewsCatalyst:
+def _fetch_news_catalyst_uncached(ticker: str, days: int = 7) -> NewsCatalyst:
     """Best-effort Agent Reach-compatible multi-source news check for VN Analyze.
 
     Uses zero-config public routes first (Google News RSS, direct RSS, Jina Reader)
@@ -326,12 +365,17 @@ def fetch_news_catalyst(ticker: str, days: int = 7) -> NewsCatalyst:
             dataQuality=DataQuality(status="missing", source=_MULTI_SOURCE, warnings=["disabled"]),
         )
 
-    results = [
-        _source_result("google_news_rss", _GOOGLE_NEWS_RSS_ROUTE, lambda: _google_news_rss_items(symbol, days)),
-        _source_result("direct_vn_rss", _DIRECT_RSS_ROUTE, lambda: _direct_rss_items(symbol)),
-        _source_result("jina_reader", _JINA_READER_ROUTE, lambda: _jina_search_items(symbol, days)),
-        _exa_items(symbol, days),
+    source_calls: list[Callable[[], SourceResult]] = [
+        lambda: _source_result("google_news_rss", _GOOGLE_NEWS_RSS_ROUTE, lambda: _google_news_rss_items(symbol, days)),
+        lambda: _source_result("direct_vn_rss", _DIRECT_RSS_ROUTE, lambda: _direct_rss_items(symbol)),
+        lambda: _source_result("jina_reader", _JINA_READER_ROUTE, lambda: _jina_search_items(symbol, days)),
+        lambda: _exa_items(symbol, days),
     ]
+    # Source calls are independent and individually bounded. Running them in parallel
+    # keeps the first uncached Analyze/Portfolio request below the frontend timeout in
+    # normal failure cases instead of summing every source timeout sequentially.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(source_calls), thread_name_prefix="vn-news") as executor:
+        results = list(executor.map(lambda call: call(), source_calls))
     items = _dedupe_items([item for result in results for item in result.items], limit=int(os.getenv("VN_NEWS_CATALYST_LIMIT", "8")))
     statuses = [result.status for result in results]
     warnings = [f"{status.name}: {status.warning}" for status in statuses if status.warning and status.status in {"failed", "missing_tool"}]
@@ -360,3 +404,26 @@ def fetch_news_catalyst(ticker: str, days: int = 7) -> NewsCatalyst:
             warnings=warnings if warnings else ([] if items else ["no_high_signal_public_web_item"]),
         ),
     )
+
+
+def fetch_news_catalyst(ticker: str, days: int = 7, *, force_refresh: bool = False) -> NewsCatalyst:
+    """Return cached multi-source news so portfolio/watchlist views stay responsive."""
+    symbol = ticker.upper().strip()
+    normalized_days = max(1, int(days))
+    if not symbol or not _enabled():
+        return _fetch_news_catalyst_uncached(symbol, normalized_days)
+
+    key = (symbol, normalized_days)
+    ttl = _cache_ttl_seconds()
+    now = time.monotonic()
+    if not force_refresh and ttl > 0:
+        with _NEWS_CACHE_LOCK:
+            cached = _NEWS_CACHE.get(key)
+        if cached and now - cached[0] <= ttl:
+            return cached[1].model_copy(deep=True)
+
+    result = _fetch_news_catalyst_uncached(symbol, normalized_days)
+    if ttl > 0:
+        with _NEWS_CACHE_LOCK:
+            _NEWS_CACHE[key] = (now, result.model_copy(deep=True))
+    return result

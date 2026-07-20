@@ -135,6 +135,30 @@ class TestStorage(unittest.TestCase):
             Config.reset_instance()
             temp_dir.cleanup()
 
+    def test_legacy_portfolio_tables_gain_vn_settlement_columns_idempotently(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        db_path = os.path.join(temp_dir.name, "legacy_portfolio.sqlite")
+        try:
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("CREATE TABLE portfolio_trades (id INTEGER PRIMARY KEY, account_id INTEGER, trade_date DATE)")
+                conn.execute("CREATE TABLE portfolio_positions (id INTEGER PRIMARY KEY, account_id INTEGER, quantity FLOAT)")
+                conn.execute("CREATE TABLE portfolio_position_lots (id INTEGER PRIMARY KEY, account_id INTEGER, open_date DATE)")
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            db = DatabaseManager(db_url=f"sqlite:///{db_path}")
+            db._ensure_portfolio_vn_settlement_columns()
+            with sqlite3.connect(db_path) as conn:
+                trade_columns = {row[1] for row in conn.execute("PRAGMA table_info(portfolio_trades)")}
+                position_columns = {row[1] for row in conn.execute("PRAGMA table_info(portfolio_positions)")}
+                lot_columns = {row[1] for row in conn.execute("PRAGMA table_info(portfolio_position_lots)")}
+            self.assertTrue({"settlement_date", "settlement_estimated", "affects_cash"} <= trade_columns)
+            self.assertTrue({"sellable_quantity", "pending_quantity", "next_settlement_date", "settlement_estimated"} <= position_columns)
+            self.assertTrue({"sellable_date", "settlement_estimated"} <= lot_columns)
+        finally:
+            DatabaseManager.reset_instance()
+            Config.reset_instance()
+            temp_dir.cleanup()
+
     def test_database_initialization_records_schema_version(self):
         DatabaseManager.reset_instance()
         db = DatabaseManager(db_url="sqlite:///:memory:")

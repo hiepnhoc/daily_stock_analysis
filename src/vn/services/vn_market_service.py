@@ -15,6 +15,7 @@ from src.vn.data import provider, ssi_iboard
 from src.vn.indicators.technicals import add_indicators, latest_technical_snapshot
 from src.vn.news_catalyst import fetch_news_catalyst
 from src.vn.schemas import DataQuality, TechnicalSnapshot, VNActionPlan, VNMarketContext
+from src.vn.taxonomy import VN_SECTOR_MAP
 
 
 def _repo_root() -> Path:
@@ -46,15 +47,7 @@ def _journal_path() -> Path:
     return path
 
 
-_SECTOR_MAP = {
-    "HPG": "Thép", "HSG": "Thép", "NKG": "Thép",
-    "FPT": "Công nghệ", "CMG": "Công nghệ", "CTR": "Công nghệ",
-    "SSI": "Chứng khoán", "VCI": "Chứng khoán", "VND": "Chứng khoán", "HCM": "Chứng khoán",
-    "TCB": "Ngân hàng", "CTG": "Ngân hàng", "VCB": "Ngân hàng", "MBB": "Ngân hàng", "ACB": "Ngân hàng",
-    "MWG": "Bán lẻ", "FRT": "Bán lẻ", "DGW": "Bán lẻ",
-    "VHM": "Bất động sản", "NLG": "Bất động sản", "KDH": "Bất động sản", "DXG": "Bất động sản",
-    "GAS": "Dầu khí", "PLX": "Dầu khí", "PVD": "Dầu khí", "PVS": "Dầu khí",
-}
+_SECTOR_MAP = VN_SECTOR_MAP
 
 _TICKER_NAME_MAP = {
     "ACB": "Ngân hàng Á Châu",
@@ -143,13 +136,13 @@ def build_market_context() -> VNMarketContext:
     rsi = snap.get("rsi14")
     bias = "neutral"
     warnings: List[str] = []
-    if close and ema20 and close < ema20:
-        bias = "cautious"
-        warnings.append("VNINDEX dưới EMA20, ưu tiên giảm size")
     if close and ema60 and close < ema60:
         bias = "bearish"
         warnings.append("VNINDEX dưới EMA60, không mua đuổi")
-    if close and ema20 and close > ema20 and (rsi is None or rsi < 72):
+    elif close and ema20 and close < ema20:
+        bias = "cautious"
+        warnings.append("VNINDEX dưới EMA20, ưu tiên giảm size")
+    elif close and ema20 and close > ema20 and (rsi is None or rsi < 72):
         bias = "bullish"
     return VNMarketContext(
         marketBias=bias,
@@ -245,7 +238,7 @@ def scan_watchlist(watchlist: List[str], mode: str = "tplus") -> dict:
     return {"items": [item.model_dump(mode="json") for item in items]}
 
 
-def portfolio_check(holdings: List[dict]) -> dict:
+def portfolio_check(holdings: List[dict], *, include_news: bool = False) -> dict:
     items = []
     market = build_market_context()
     for holding in holdings:
@@ -281,6 +274,12 @@ def portfolio_check(holdings: List[dict]) -> dict:
             if plan.action in {"avoid", "sell_reduce"}:
                 today_plan.append("Setup yếu, ưu tiên hồi để giảm tỷ trọng, không mua thêm")
         pending_plan = "Không có hàng chờ về" if pending_qty <= 0 else f"{pending_qty} cp chờ về: xử lý khi hàng về, không giả định là core"
+        news = fetch_news_catalyst(ticker) if include_news else None
+        risk_flags = list(plan.riskFlags)
+        if news and news.checked:
+            risk_flags = [flag for flag in risk_flags if flag != "chưa kiểm chứng news/catalyst"]
+        if news:
+            risk_flags.extend(flag for flag in news.riskFlags if flag not in risk_flags)
         items.append(
             {
                 "ticker": ticker,
@@ -298,7 +297,8 @@ def portfolio_check(holdings: List[dict]) -> dict:
                 "targets": plan.targets,
                 "todayPlan": today_plan,
                 "pendingPlan": pending_plan,
-                "riskFlags": plan.riskFlags,
+                "riskFlags": risk_flags,
+                "newsCatalyst": news.model_dump(mode="json") if news else None,
             }
         )
     return {"items": items}

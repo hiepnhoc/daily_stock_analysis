@@ -172,6 +172,9 @@ class PortfolioRepository:
         price: float,
         fee: float,
         tax: float,
+        settlement_date: Optional[date] = None,
+        settlement_estimated: bool = True,
+        affects_cash: bool = True,
         note: Optional[str] = None,
         dedup_hash: Optional[str] = None,
     ) -> PortfolioTrade:
@@ -189,6 +192,9 @@ class PortfolioRepository:
                 price=price,
                 fee=fee,
                 tax=tax,
+                settlement_date=settlement_date,
+                settlement_estimated=settlement_estimated,
+                affects_cash=affects_cash,
                 note=note,
                 dedup_hash=dedup_hash,
             )
@@ -279,6 +285,12 @@ class PortfolioRepository:
                 dedup_hash=hash_value,
             )
 
+    def has_any_trade_in_session(self, *, session: Any, account_id: int) -> bool:
+        row = session.execute(
+            select(PortfolioTrade.id).where(PortfolioTrade.account_id == account_id).limit(1)
+        ).scalar_one_or_none()
+        return row is not None
+
     def has_trade_uid_in_session(self, *, session: Any, account_id: int, trade_uid: str) -> bool:
         row = session.execute(
             select(PortfolioTrade.id).where(
@@ -316,6 +328,9 @@ class PortfolioRepository:
         price: float,
         fee: float,
         tax: float,
+        settlement_date: Optional[date] = None,
+        settlement_estimated: bool = True,
+        affects_cash: bool = True,
         note: Optional[str] = None,
         dedup_hash: Optional[str] = None,
     ) -> PortfolioTrade:
@@ -331,6 +346,9 @@ class PortfolioRepository:
             price=price,
             fee=fee,
             tax=tax,
+            settlement_date=settlement_date,
+            settlement_estimated=settlement_estimated,
+            affects_cash=affects_cash,
             note=note,
             dedup_hash=dedup_hash,
         )
@@ -788,6 +806,33 @@ class PortfolioRepository:
             ).scalar_one_or_none()
             return row
 
+    def get_recent_liquidity(
+        self,
+        *,
+        code: str,
+        as_of: date,
+        sessions: int = 20,
+    ) -> Dict[str, Any]:
+        """Return recent average traded value/volume for deterministic capacity checks."""
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(StockDaily.amount, StockDaily.volume, StockDaily.date)
+                .where(StockDaily.code == code, StockDaily.date <= as_of)
+                .order_by(StockDaily.date.desc())
+                .limit(max(1, int(sessions)))
+            ).all()
+        amounts = [float(row[0]) for row in rows if row[0] is not None and float(row[0]) > 0]
+        volumes = [float(row[1]) for row in rows if row[1] is not None and float(row[1]) > 0]
+        return {
+            "code": code,
+            "session_count": len(rows),
+            "amount_coverage": len(amounts),
+            "volume_coverage": len(volumes),
+            "avg_traded_value": (sum(amounts) / len(amounts)) if amounts else None,
+            "avg_volume": (sum(volumes) / len(volumes)) if volumes else None,
+            "latest_date": rows[0][2] if rows else None,
+        }
+
     def list_daily_snapshots_for_risk(
         self,
         *,
@@ -899,6 +944,14 @@ class PortfolioRepository:
                         market=item["market"],
                         currency=item["currency"],
                         quantity=float(item["quantity"]),
+                        sellable_quantity=float(item.get("sellable_quantity", item["quantity"])),
+                        pending_quantity=float(item.get("pending_quantity", 0.0)),
+                        next_settlement_date=(
+                            date.fromisoformat(item["next_settlement_date"])
+                            if isinstance(item.get("next_settlement_date"), str)
+                            else item.get("next_settlement_date")
+                        ),
+                        settlement_estimated=bool(item.get("settlement_estimated", False)),
                         avg_cost=float(item["avg_cost"]),
                         total_cost=float(item["total_cost"]),
                         last_price=float(item["last_price"]),
@@ -917,6 +970,8 @@ class PortfolioRepository:
                         market=lot["market"],
                         currency=lot["currency"],
                         open_date=lot["open_date"],
+                        sellable_date=lot.get("sellable_date"),
+                        settlement_estimated=bool(lot.get("settlement_estimated", False)),
                         remaining_quantity=float(lot["remaining_quantity"]),
                         unit_cost=float(lot["unit_cost"]),
                         source_trade_id=lot.get("source_trade_id"),
@@ -1084,6 +1139,14 @@ class PortfolioRepository:
                         market=item["market"],
                         currency=item["currency"],
                         quantity=float(item["quantity"]),
+                        sellable_quantity=float(item.get("sellable_quantity", item["quantity"])),
+                        pending_quantity=float(item.get("pending_quantity", 0.0)),
+                        next_settlement_date=(
+                            date.fromisoformat(item["next_settlement_date"])
+                            if isinstance(item.get("next_settlement_date"), str)
+                            else item.get("next_settlement_date")
+                        ),
+                        settlement_estimated=bool(item.get("settlement_estimated", False)),
                         avg_cost=float(item["avg_cost"]),
                         total_cost=float(item["total_cost"]),
                         last_price=float(item["last_price"]),
@@ -1102,6 +1165,8 @@ class PortfolioRepository:
                         market=lot["market"],
                         currency=lot["currency"],
                         open_date=lot["open_date"],
+                        sellable_date=lot.get("sellable_date"),
+                        settlement_estimated=bool(lot.get("settlement_estimated", False)),
                         remaining_quantity=float(lot["remaining_quantity"]),
                         unit_cost=float(lot["unit_cost"]),
                         source_trade_id=lot.get("source_trade_id"),

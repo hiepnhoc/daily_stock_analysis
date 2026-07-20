@@ -60,6 +60,7 @@ const FALLBACK_BROKERS: PortfolioImportBrokerItem[] = [
   { broker: 'huatai', aliases: [], displayName: '华泰' },
   { broker: 'citic', aliases: ['zhongxin'], displayName: '中信' },
   { broker: 'cmb', aliases: ['cmbchina', 'zhaoshang'], displayName: '招商' },
+  { broker: 'generic_vn', aliases: [], displayName: 'Việt Nam (CSV chung, không gắn broker)' },
 ];
 
 type AccountOption = 'all' | number;
@@ -113,7 +114,7 @@ function isNewerSignal(left: DecisionSignalItem | undefined, right: DecisionSign
 }
 
 const DECISION_SIGNAL_MARKETS = new Set<DecisionSignalMarket>(['cn', 'hk', 'us', 'jp', 'kr']);
-type PortfolioAccountMarket = 'cn' | 'hk' | 'us' | 'jp' | 'kr';
+type PortfolioAccountMarket = 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'vn';
 
 function toDecisionSignalMarket(value: string | null | undefined): DecisionSignalMarket | undefined {
   const normalized = String(value || '').toLowerCase();
@@ -199,6 +200,7 @@ const PortfolioPage: React.FC = () => {
 
   const [brokers, setBrokers] = useState<PortfolioImportBrokerItem[]>([]);
   const [selectedBroker, setSelectedBroker] = useState('huatai');
+  const [csvPriceUnit, setCsvPriceUnit] = useState<'vnd' | 'thousand_vnd'>('vnd');
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [csvDryRun, setCsvDryRun] = useState(true);
   const [csvParsing, setCsvParsing] = useState(false);
@@ -296,25 +298,25 @@ const PortfolioPage: React.FC = () => {
       const brokerItems = response.brokers || [];
       if (brokerItems.length === 0) {
         setBrokers(FALLBACK_BROKERS);
-        setBrokerLoadWarning('券商列表接口返回为空，已回退为内置券商列表（华泰/中信/招商）。');
-        if (!FALLBACK_BROKERS.some((item) => item.broker === selectedBroker)) {
-          setSelectedBroker(FALLBACK_BROKERS[0].broker);
-        }
+        setBrokerLoadWarning('券商列表接口返回为空，已回退为内置列表（华泰/中信/招商及 mẫu CSV Việt Nam）。');
+        setSelectedBroker((current) => (
+          FALLBACK_BROKERS.some((item) => item.broker === current) ? current : FALLBACK_BROKERS[0].broker
+        ));
         return;
       }
       setBrokers(brokerItems);
       setBrokerLoadWarning(null);
-      if (!brokerItems.some((item) => item.broker === selectedBroker)) {
-        setSelectedBroker(brokerItems[0].broker);
-      }
+      setSelectedBroker((current) => (
+        brokerItems.some((item) => item.broker === current) ? current : brokerItems[0].broker
+      ));
     } catch {
       setBrokers(FALLBACK_BROKERS);
-      setBrokerLoadWarning('券商列表接口不可用，已回退为内置券商列表（华泰/中信/招商）。');
-      if (!FALLBACK_BROKERS.some((item) => item.broker === selectedBroker)) {
-        setSelectedBroker(FALLBACK_BROKERS[0].broker);
-      }
+      setBrokerLoadWarning('券商列表接口不可用，已回退为内置列表（华泰/中信/招商及 mẫu CSV Việt Nam）。');
+      setSelectedBroker((current) => (
+        FALLBACK_BROKERS.some((item) => item.broker === current) ? current : FALLBACK_BROKERS[0].broker
+      ));
     }
-  }, [selectedBroker]);
+  }, []);
 
   const loadSnapshotAndRisk = useCallback(async () => {
     setIsLoading(true);
@@ -673,7 +675,11 @@ const PortfolioPage: React.FC = () => {
     if (!csvFile) return;
     try {
       setCsvParsing(true);
-      const parsed = await portfolioApi.parseCsvImport(selectedBroker, csvFile);
+      const parsed = await portfolioApi.parseCsvImport(
+        selectedBroker,
+        csvFile,
+        selectedBroker === 'generic_vn' ? csvPriceUnit : undefined,
+      );
       setCsvParseResult(parsed);
       setCsvCommitResult(null);
     } catch (err) {
@@ -692,7 +698,13 @@ const PortfolioPage: React.FC = () => {
     try {
       setWriteWarning(null);
       setCsvCommitting(true);
-      const committed = await portfolioApi.commitCsvImport(writableAccountId, selectedBroker, csvFile, csvDryRun);
+      const committed = await portfolioApi.commitCsvImport(
+        writableAccountId,
+        selectedBroker,
+        csvFile,
+        csvDryRun,
+        selectedBroker === 'generic_vn' ? csvPriceUnit : undefined,
+      );
       setCsvCommitResult(committed);
       if (!csvDryRun) {
         await refreshPortfolioData();
@@ -1085,13 +1097,20 @@ const PortfolioPage: React.FC = () => {
             <select
               className={PORTFOLIO_SELECT_CLASS}
               value={accountForm.market}
-              onChange={(e) => setAccountForm((prev) => ({ ...prev, market: e.target.value as PortfolioAccountMarket }))}
+              onChange={(e) => {
+                const market = e.target.value as PortfolioAccountMarket;
+                const defaultCurrencies: Record<PortfolioAccountMarket, string> = {
+                  cn: 'CNY', hk: 'HKD', us: 'USD', jp: 'JPY', kr: 'KRW', vn: 'VND',
+                };
+                setAccountForm((prev) => ({ ...prev, market, baseCurrency: defaultCurrencies[market] }));
+              }}
             >
               <option value="cn">市场：A 股（cn）</option>
               <option value="hk">市场：港股（hk）</option>
               <option value="us">市场：美股（us）</option>
               <option value="jp">市场：日股（jp）</option>
               <option value="kr">市场：韩股（kr）</option>
+              <option value="vn">Thị trường Việt Nam（vn / VND）</option>
             </select>
             <button type="submit" className="btn-secondary text-sm" disabled={accountCreating}>
               {accountCreating ? '创建中...' : '创建账户'}
@@ -1175,15 +1194,23 @@ const PortfolioPage: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {positionRows.map((row) => {
+                  {positionRows.map((row, rowIndex) => {
                     const rowKey = `${row.accountId}-${row.symbol}-${row.market}`;
                     const analyzing = positionAnalysisLoadingKey === rowKey;
                     const signal = signalByPositionKey.get(rowKey);
                     return (
-                    <tr key={rowKey} className="border-b border-white/5">
+                    <tr key={`${rowKey}-${row.currency}-${rowIndex}`} className="border-b border-white/5">
                       <td className="py-2 pr-2 text-secondary">{row.accountName}</td>
                       <td className="py-2 pr-2 font-mono text-foreground">{row.symbol}</td>
-                      <td className="py-2 pr-2 text-right">{row.quantity.toFixed(2)}</td>
+                      <td className="py-2 pr-2 text-right">
+                        <div>{row.quantity.toFixed(2)}</div>
+                        {row.market === 'vn' ? (
+                          <div className="text-[11px] text-secondary">
+                            Khả dụng {Number(row.sellableQuantity || 0).toFixed(0)} · Chờ về {Number(row.pendingQuantity || 0).toFixed(0)}
+                            {row.nextSettlementDate ? ` · ${row.nextSettlementDate}` : ''}
+                          </div>
+                        ) : null}
+                      </td>
                       <td className="py-2 pr-2 text-right">{row.avgCost.toFixed(4)}</td>
                       <td className="py-2 pr-2 text-right">
                         <div>{formatPositionPrice(row)}</div>
@@ -1277,7 +1304,7 @@ const PortfolioPage: React.FC = () => {
         />
       ) : null}
 
-      <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+      <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
         <Card padding="md">
           <h3 className="text-sm font-semibold text-foreground mb-2">{text.drawdownMonitor}</h3>
           <div className="text-xs text-secondary space-y-1">
@@ -1300,6 +1327,25 @@ const PortfolioPage: React.FC = () => {
             <div>{text.accountCount}: {snapshot?.accountCount ?? 0}</div>
             <div>{text.currency}: {snapshot?.currency || 'CNY'}</div>
             <div>{text.costMethodShort}: {(snapshot?.costMethod || costMethod).toUpperCase()}</div>
+          </div>
+        </Card>
+        <Card padding="md">
+          <h3 className="text-sm font-semibold text-foreground mb-2">{text.inventoryLiquidity}</h3>
+          <div className="text-xs text-secondary space-y-1">
+            <div>{text.sellableQuantity}: {risk?.inventoryLiquidity?.sellableQuantity ?? 0}</div>
+            <div>{text.pendingQuantity}: {risk?.inventoryLiquidity?.pendingQuantity ?? 0}</div>
+            <div>{text.pendingWeight}: {formatPct(risk?.inventoryLiquidity?.pendingWeightPct)}</div>
+            <div>{text.liquidityAlerts}: {risk?.inventoryLiquidity?.liquidity?.alertCount ?? 0}</div>
+            {(risk?.inventoryLiquidity?.actionPlan || []).length > 0 ? (
+              <div className="space-y-1 pt-1">
+                <div className="font-medium text-foreground">{text.riskActionPlan}</div>
+                {(risk?.inventoryLiquidity?.actionPlan || []).slice(0, 2).map((item) => (
+                  <div key={item.code} className={item.severity === 'high' ? 'text-warning' : undefined}>
+                    {item.action}
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
         </Card>
         <Card padding="md">
@@ -1422,7 +1468,11 @@ const PortfolioPage: React.FC = () => {
               />
             ) : null}
             <div className="grid grid-cols-2 gap-2">
-              <select className={PORTFOLIO_SELECT_CLASS} value={selectedBroker} onChange={(e) => setSelectedBroker(e.target.value)}>
+              <select aria-label="CSV broker/template" className={PORTFOLIO_SELECT_CLASS} value={selectedBroker} onChange={(e) => {
+                setSelectedBroker(e.target.value);
+                setCsvParseResult(null);
+                setCsvCommitResult(null);
+              }}>
                 {brokers.length > 0 ? (
                   brokers.map((item) => <option key={item.broker} value={item.broker}>{formatBrokerLabel(item.broker, item.displayName)}</option>)
                 ) : (
@@ -1435,6 +1485,26 @@ const PortfolioPage: React.FC = () => {
                   onChange={(e) => setCsvFile(e.target.files && e.target.files[0] ? e.target.files[0] : null)} />
               </label>
             </div>
+            {selectedBroker === 'generic_vn' ? (
+              <div className="space-y-1">
+                <label className="text-xs text-secondary" htmlFor="csv-price-unit">Đơn vị giá trong CSV Việt Nam</label>
+                <select
+                  id="csv-price-unit"
+                  aria-label="VN CSV price unit"
+                  className={PORTFOLIO_SELECT_CLASS}
+                  value={csvPriceUnit}
+                  onChange={(e) => {
+                    setCsvPriceUnit(e.target.value as 'vnd' | 'thousand_vnd');
+                    setCsvParseResult(null);
+                    setCsvCommitResult(null);
+                  }}
+                >
+                  <option value="vnd">VND thực (100.000 = 100.000 VND)</option>
+                  <option value="thousand_vnd">Nghìn VND (100 = 100.000 VND)</option>
+                </select>
+                <p className="text-[11px] text-warning">Template chung, chưa xác nhận format riêng SSI/VPS/TCBS/VNDIRECT. Hãy xem preview trước khi ghi.</p>
+              </div>
+            ) : null}
             <div className="flex items-center gap-2 text-xs text-secondary">
               <input id="csv-dry-run" type="checkbox" checked={csvDryRun} onChange={(e) => setCsvDryRun(e.target.checked)} />
               <label htmlFor="csv-dry-run">仅预演（不写入）</label>
@@ -1449,12 +1519,31 @@ const PortfolioPage: React.FC = () => {
               </button>
             </div>
             {csvParseResult ? (
-              <InlineAlert
-                variant={getCsvParseVariant(csvParseResult)}
-                title="CSV 解析结果"
-                message={`有效 ${csvParseResult.recordCount} 条，跳过 ${csvParseResult.skippedCount} 条，错误 ${csvParseResult.errorCount} 条。`}
-                className="rounded-lg px-3 py-2 text-xs shadow-none"
-              />
+              <>
+                <InlineAlert
+                  variant={getCsvParseVariant(csvParseResult)}
+                  title="CSV 解析结果"
+                  message={`有效 ${csvParseResult.recordCount} 条，跳过 ${csvParseResult.skippedCount} 条，错误 ${csvParseResult.errorCount} 条。`}
+                  className="rounded-lg px-3 py-2 text-xs shadow-none"
+                />
+                {csvParseResult.records.length > 0 ? (
+                  <div className="max-h-48 overflow-auto rounded-lg border border-white/10">
+                    <table className="w-full text-left text-[11px] text-secondary">
+                      <thead className="sticky top-0 bg-surface">
+                        <tr><th className="p-2">Ngày</th><th>Mã</th><th>M/B</th><th>KL</th><th>Giá</th><th>Về</th></tr>
+                      </thead>
+                      <tbody>
+                        {csvParseResult.records.slice(0, 20).map((record, index) => (
+                          <tr key={`${record.dedupHash}-${index}`} className="border-t border-white/5">
+                            <td className="p-2">{record.tradeDate}</td><td>{record.symbol}</td><td>{record.side}</td>
+                            <td>{record.quantity}</td><td>{record.price}</td><td>{record.settlementDate || (record.market === 'vn' ? 'T+2 ước tính' : '--')}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : null}
+              </>
             ) : null}
             {csvCommitResult ? (
               <InlineAlert

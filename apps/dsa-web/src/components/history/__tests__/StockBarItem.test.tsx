@@ -38,11 +38,13 @@ describe('StockBarItemComponent', () => {
     expect(within(meta).getByText('CN · 非交易日')).toBeVisible();
 
     expect(screen.getByText('贵州茅台股票股份.')).toBeVisible();
-    expect(
-      screen.getByRole('button', {
-        name: /^贵州茅台股票股份有限公司 600519 历史记录$/,
-      }),
-    ).toBeInTheDocument();
+    const historyItem = screen.getByRole('button', {
+      name: /^贵州茅台股票股份有限公司 600519 历史记录$/,
+    });
+    const deleteButton = within(actions).getByRole('button', { name: /删除 贵州茅台股票股份有限公司 历史记录/ });
+    expect(historyItem.tagName).toBe('DIV');
+    expect(deleteButton.tagName).toBe('BUTTON');
+    expect(historyItem.contains(deleteButton)).toBe(true);
   });
 
   it('uses structured action before legacy operation advice', () => {

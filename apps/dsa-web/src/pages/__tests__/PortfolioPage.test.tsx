@@ -97,7 +97,7 @@ vi.mock('recharts', () => ({
 type AccountItem = {
   id: number;
   name: string;
-  market?: 'cn' | 'hk' | 'us' | 'jp' | 'kr';
+  market?: 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'vn';
   baseCurrency?: string;
 };
 
@@ -363,7 +363,30 @@ describe('PortfolioPage FX refresh', () => {
     expect(screen.getByText('Scope')).toBeInTheDocument();
     expect(screen.getByText('AI risk signals')).toBeInTheDocument();
     expect(screen.getByText('No defensive signals')).toBeInTheDocument();
+    expect(screen.getByText('T+ inventory & liquidity')).toBeInTheDocument();
+    expect(screen.getByText(/Pending weight:/)).toBeInTheDocument();
+    expect(screen.getByText(/Liquidity alerts:/)).toBeInTheDocument();
     expect(screen.queryByText('回撤监控')).not.toBeInTheDocument();
+  });
+
+  it('requires an explicit VN CSV price unit and forwards it to preview', async () => {
+    listImportBrokers.mockResolvedValueOnce({
+      brokers: [{ broker: 'generic_vn', aliases: [], displayName: 'Việt Nam (CSV chung, không gắn broker)' }],
+    });
+    render(<PortfolioPage />);
+    await waitForInitialLoad();
+
+    const brokerSelect = await screen.findByRole('combobox', { name: 'CSV broker/template' });
+    fireEvent.change(brokerSelect, { target: { value: 'generic_vn' } });
+    const unitSelect = screen.getByRole('combobox', { name: 'VN CSV price unit' });
+    fireEvent.change(unitSelect, { target: { value: 'thousand_vnd' } });
+
+    const file = new File(['Ngày giao dịch,Mã CK,Mua/Bán,Khối lượng khớp,Giá khớp\n29/04/2026,FPT,Mua,100,100'], 'vn.csv', { type: 'text/csv' });
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, { target: { files: [file] } });
+    fireEvent.click(screen.getByRole('button', { name: '解析文件' }));
+
+    await waitFor(() => expect(parseCsvImport).toHaveBeenCalledWith('generic_vn', file, 'thousand_vnd'));
   });
 
   it('renders portfolio decision signal risk summary', async () => {

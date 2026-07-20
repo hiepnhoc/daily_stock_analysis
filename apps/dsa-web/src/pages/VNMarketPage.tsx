@@ -17,6 +17,7 @@ import {
   type VNSectorFlowItem,
 } from '../api/vnMarket';
 import { getParsedApiError } from '../api/error';
+import { portfolioApi } from '../api/portfolio';
 import { formatVNDateTime, isValidVNTicker, parsePortfolioInput, type PortfolioInputError } from '../utils/vnMarket';
 
 const DEFAULT_WATCHLIST = 'HPG,FPT,SSI,VCI,TCB,MWG';
@@ -47,6 +48,15 @@ function saveText(key: string, value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function stableTextId(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
 function readSavedRules(): VNAlertRule[] {
@@ -297,6 +307,8 @@ const VNMarketPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isCheckingPortfolio, setIsCheckingPortfolio] = useState(false);
+  const [isLoadingPersistentPortfolio, setIsLoadingPersistentPortfolio] = useState(false);
+  const [isImportingPersistentPortfolio, setIsImportingPersistentPortfolio] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [isGeneratingPlaybook, setIsGeneratingPlaybook] = useState(false);
   const [isLoadingSector, setIsLoadingSector] = useState(false);
@@ -360,7 +372,81 @@ const VNMarketPage: React.FC = () => {
   };
 
   const savePortfolio = () => {
-    setSaveStatus(saveText(PORTFOLIO_STORAGE_KEY, portfolioText) ? 'Đã lưu Portfolio T+ trên trình duyệt này.' : 'Không lưu được Portfolio T+ trên trình duyệt này.');
+    setSaveStatus(saveText(PORTFOLIO_STORAGE_KEY, portfolioText) ? 'Đã lưu tạm Portfolio T+ trên trình duyệt này.' : 'Không lưu được Portfolio T+ trên trình duyệt này.');
+  };
+
+  const loadPersistentPortfolio = async () => {
+    setIsLoadingPersistentPortfolio(true);
+    setError(null);
+    try {
+      const accounts = (await portfolioApi.getAccounts(false)).accounts.filter((item) => item.market === 'vn');
+      if (!accounts.length) {
+        setSaveStatus('Chưa có tài khoản VN/VND trong sổ portfolio. Mở Sổ giao dịch bền vững để tạo tài khoản và nhập cash/trade.');
+        return;
+      }
+      const account = accounts[0];
+      const snapshot = await portfolioApi.getSnapshot({ accountId: account.id, costMethod: 'fifo' });
+      const positions = snapshot.accounts[0]?.positions || [];
+      if (!positions.length) {
+        setSaveStatus(`Tài khoản ${account.name} chưa có vị thế.`);
+        return;
+      }
+      const text = positions.map((position) => {
+        const avgCostThousand = Number(position.avgCost || 0) / 1000;
+        const sellable = Number(position.sellableQuantity || 0);
+        const pending = Number(position.pendingQuantity || 0);
+        return `${position.symbol},${Number(position.quantity || 0)},${avgCostThousand},${sellable},${pending}`;
+      }).join('\n');
+      setPortfolioText(text);
+      saveText(PORTFOLIO_STORAGE_KEY, text);
+      setPortfolioItems([]);
+      setPortfolioErrors([]);
+      setPortfolioResultAt(null);
+      setPlaybook(null);
+      setSaveStatus(`Đã tải ${positions.length} vị thế từ sổ ${account.name}; dữ liệu này được lưu trong database.`);
+    } catch (err) {
+      setError(friendlyError(err));
+    } finally {
+      setIsLoadingPersistentPortfolio(false);
+    }
+  };
+
+  const importPortfolioToLedger = async () => {
+    const parsed = parsePortfolioInput(portfolioText);
+    if (parsed.errors.length || !parsed.validRows.length) {
+      setPortfolioErrors(parsed.errors.length ? parsed.errors : [{ line: 0, message: 'Chưa có vị thế hợp lệ để nhập sổ.' }]);
+      return;
+    }
+    setIsImportingPersistentPortfolio(true);
+    setError(null);
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const accountsResponse = await portfolioApi.getAccounts(false);
+      let account = accountsResponse.accounts.find((item) => item.market === 'vn' && item.baseCurrency === 'VND');
+      if (!account) {
+        account = await portfolioApi.createAccount({ name: 'VN Portfolio', broker: 'Manual', market: 'vn', baseCurrency: 'VND' });
+      }
+      const result = await portfolioApi.importOpeningPositions({
+        accountId: account.id,
+        asOf: today,
+        importId: `vn-text-${today}-${stableTextId(portfolioText)}`,
+        holdings: parsed.validRows.map((row) => ({
+          symbol: row.ticker,
+          quantity: row.quantity,
+          avgCost: row.avgCost * 1000,
+          sellableQuantity: row.sellableQty,
+          pendingQuantity: row.pendingQty,
+        })),
+      });
+      setPortfolioItems([]);
+      setPortfolioErrors([]);
+      setPortfolioResultAt(null);
+      setSaveStatus(`Đã nhập ${result.holdings} mã vào sổ ${account.name}; ${result.insertedEvents} opening lot events, không làm biến động cash.`);
+    } catch (err) {
+      setError(friendlyError(err));
+    } finally {
+      setIsImportingPersistentPortfolio(false);
+    }
   };
 
   const resetPortfolio = () => {
@@ -427,7 +513,7 @@ const VNMarketPage: React.FC = () => {
     setIsCheckingPortfolio(true);
     setError(null);
     try {
-      const response = await vnMarketApi.checkPortfolio(parsed.validRows);
+      const response = await vnMarketApi.checkPortfolio(parsed.validRows, { includeNews: true });
       setPortfolioItems(response.items);
       setPortfolioResultAt(new Date().toISOString());
     } catch (err) {
@@ -688,7 +774,7 @@ const VNMarketPage: React.FC = () => {
                 {analysis.newsCatalyst?.sourcesChecked?.length ? (
                   <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
                     {analysis.newsCatalyst.sourcesChecked.map((source) => (
-                      <span key={`${source.name}-${source.route}`} className={`rounded-full border border-border bg-base px-2 py-1 ${sourceStatusTone(source.status)}`} title={source.warning || source.route || undefined}>
+                      <span key={`${source.name}-${source.route}`} aria-label={`${source.name}: ${source.status}; ${source.warning || source.route || 'không có cảnh báo'}`} className={`rounded-full border border-border bg-base px-2 py-1 ${sourceStatusTone(source.status)}`}>
                         {source.name}: {source.status} · {source.items}
                       </span>
                     ))}
@@ -745,7 +831,10 @@ const VNMarketPage: React.FC = () => {
           <textarea id="vn-portfolio-input" aria-describedby="vn-portfolio-help vn-portfolio-errors" className={`mt-4 min-h-28 w-full max-w-full rounded-2xl border bg-base p-3 text-sm text-foreground ${portfolioErrors.length ? 'border-rose-500' : 'border-border'}`} value={portfolioText} onChange={(event) => { setPortfolioText(event.target.value); setPortfolioItems([]); setPortfolioErrors([]); setPortfolioResultAt(null); setPlaybook(null); }} />
           <div className="mt-3 flex flex-wrap gap-2">
             <button type="button" className="btn-primary inline-flex items-center gap-2" onClick={() => void runPortfolioCheck()} disabled={isCheckingPortfolio}>{isCheckingPortfolio ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}{isCheckingPortfolio ? 'Đang kiểm tra…' : 'Kiểm tra Portfolio'}</button>
-            <button type="button" className="btn-secondary" onClick={savePortfolio}>Lưu Portfolio</button>
+            <button type="button" className="btn-secondary" onClick={() => void loadPersistentPortfolio()} disabled={isLoadingPersistentPortfolio}>{isLoadingPersistentPortfolio ? 'Đang tải sổ…' : 'Tải từ sổ VN'}</button>
+            <button type="button" className="btn-secondary" onClick={() => void importPortfolioToLedger()} disabled={isImportingPersistentPortfolio}>{isImportingPersistentPortfolio ? 'Đang nhập sổ…' : 'Nhập vị thế mở đầu vào sổ'}</button>
+            <button type="button" className="btn-secondary" onClick={() => navigate('/portfolio')}>Mở sổ giao dịch bền vững</button>
+            <button type="button" className="btn-secondary" onClick={savePortfolio}>Lưu tạm trình duyệt</button>
             <button type="button" className="btn-secondary" onClick={resetPortfolio}>Dùng ví dụ mặc định</button>
           </div>
           <div id="vn-portfolio-errors" aria-live="polite">{portfolioErrors.length ? <ul className="mt-3 space-y-1 rounded-2xl border border-rose-400/50 bg-rose-500/10 p-3 text-sm text-rose-400">{portfolioErrors.map((item, index) => <li key={`${item.line}-${index}`}>Dòng {item.line}: {item.message}</li>)}</ul> : null}</div>
@@ -776,6 +865,24 @@ const VNMarketPage: React.FC = () => {
                   <div className="mt-3 text-xs font-semibold uppercase tracking-wide text-secondary-text">Kế hoạch chi tiết · {item.ticker}</div>
                   <ul className="mt-2 list-disc space-y-1 pl-5 text-secondary-text">{item.todayPlan.map((line) => <li key={line}>{line}</li>)}</ul>
                   <div className="mt-2 text-amber-500">{item.ticker}: {item.pendingPlan}</div>
+                  <details className="mt-3 rounded-2xl border border-border bg-surface p-3">
+                    <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-secondary-text">
+                      Tin tức / catalyst · {item.newsCatalyst?.checked ? `${item.newsCatalyst.catalysts.length} mục` : 'chưa kiểm chứng'}
+                    </summary>
+                    {item.newsCatalyst?.catalysts?.length ? (
+                      <ul className="mt-3 space-y-2 text-xs text-secondary-text">
+                        {item.newsCatalyst.catalysts.slice(0, 3).map((news) => (
+                          <li key={`${item.ticker}-${news.sourceRoute}-${news.url || news.title}`}>
+                            <span className="text-foreground">{news.title}</span>
+                            <span> · {news.source}{news.date ? ` · ${news.date}` : ''} · {news.impact}</span>
+                            {news.url ? <a aria-label={`Mở tin ${item.ticker}: ${news.title}`} className="ml-1 text-[hsl(var(--primary))] underline" href={news.url} target="_blank" rel="noreferrer">Mở bài</a> : null}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="mt-2 text-xs text-secondary-text">{item.newsCatalyst?.riskFlags?.join('; ') || 'Chưa tải tin; technical và kế hoạch vẫn hoạt động độc lập.'}</div>
+                    )}
+                  </details>
                 </div>
               );
             })}

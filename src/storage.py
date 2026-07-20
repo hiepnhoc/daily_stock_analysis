@@ -61,7 +61,7 @@ from src.utils.sniper_points import extract_sniper_points, parse_sniper_value
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
-CURRENT_SCHEMA_VERSION = "2026-06-05-create-all-baseline"
+CURRENT_SCHEMA_VERSION = "2026-07-20-portfolio-vn-settlement"
 INTELLIGENCE_ITEM_NULL_SCOPE_VALUE = "__dsa_null_scope__"
 
 # SQLAlchemy ORM 基类
@@ -517,6 +517,9 @@ class PortfolioTrade(Base):
     market = Column(String(8), nullable=False, default='cn')
     currency = Column(String(8), nullable=False, default='CNY')
     trade_date = Column(Date, nullable=False, index=True)
+    settlement_date = Column(Date, index=True)
+    settlement_estimated = Column(Boolean, nullable=False, default=True)
+    affects_cash = Column(Boolean, nullable=False, default=True)
     side = Column(String(8), nullable=False)  # buy/sell
     quantity = Column(Float, nullable=False)
     price = Column(Float, nullable=False)
@@ -586,6 +589,10 @@ class PortfolioPosition(Base):
     market = Column(String(8), nullable=False, default='cn')
     currency = Column(String(8), nullable=False, default='CNY')
     quantity = Column(Float, nullable=False, default=0.0)
+    sellable_quantity = Column(Float, nullable=False, default=0.0)
+    pending_quantity = Column(Float, nullable=False, default=0.0)
+    next_settlement_date = Column(Date)
+    settlement_estimated = Column(Boolean, nullable=False, default=False)
     avg_cost = Column(Float, nullable=False, default=0.0)
     total_cost = Column(Float, nullable=False, default=0.0)
     last_price = Column(Float, nullable=False, default=0.0)
@@ -618,6 +625,8 @@ class PortfolioPositionLot(Base):
     market = Column(String(8), nullable=False, default='cn')
     currency = Column(String(8), nullable=False, default='CNY')
     open_date = Column(Date, nullable=False, index=True)
+    sellable_date = Column(Date, index=True)
+    settlement_estimated = Column(Boolean, nullable=False, default=False)
     remaining_quantity = Column(Float, nullable=False, default=0.0)
     unit_cost = Column(Float, nullable=False, default=0.0)
     source_trade_id = Column(Integer, ForeignKey('portfolio_trades.id'))
@@ -1180,6 +1189,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
             # 创建所有表
             Base.metadata.create_all(self._engine)
+            self._ensure_portfolio_vn_settlement_columns()
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
@@ -1206,7 +1216,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         session = self._SessionLocal()
         values = {
             "version": CURRENT_SCHEMA_VERSION,
-            "description": "Baseline schema created through SQLAlchemy metadata.create_all",
+            "description": "metadata.create_all baseline plus Portfolio VN/VND settlement fields",
         }
         try:
             if self._is_sqlite_engine:
@@ -1227,6 +1237,40 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             raise
         finally:
             session.close()
+
+    def _ensure_portfolio_vn_settlement_columns(self) -> None:
+        """Add settlement/opening-position columns to existing SQLite databases."""
+        if not self._is_sqlite_engine:
+            return
+        column_sql = {
+            PortfolioTrade.__tablename__: {
+                "settlement_date": "DATE",
+                "settlement_estimated": "BOOLEAN NOT NULL DEFAULT 1",
+                "affects_cash": "BOOLEAN NOT NULL DEFAULT 1",
+            },
+            PortfolioPosition.__tablename__: {
+                "sellable_quantity": "FLOAT NOT NULL DEFAULT 0",
+                "pending_quantity": "FLOAT NOT NULL DEFAULT 0",
+                "next_settlement_date": "DATE",
+                "settlement_estimated": "BOOLEAN NOT NULL DEFAULT 0",
+            },
+            PortfolioPositionLot.__tablename__: {
+                "sellable_date": "DATE",
+                "settlement_estimated": "BOOLEAN NOT NULL DEFAULT 0",
+            },
+        }
+        for table_name, definitions in column_sql.items():
+            if not inspect(self._engine).has_table(table_name):
+                continue
+            existing = {column["name"] for column in inspect(self._engine).get_columns(table_name)}
+            for column, sql_type in definitions.items():
+                if column in existing:
+                    continue
+                with self._engine.begin() as connection:
+                    connection.exec_driver_sql(
+                        f"ALTER TABLE {table_name} ADD COLUMN {column} {sql_type}"
+                    )
+                existing.add(column)
 
     def _ensure_intelligence_items_unique_index(self) -> None:
         if not self._is_sqlite_engine:

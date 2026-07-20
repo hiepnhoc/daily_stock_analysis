@@ -6273,6 +6273,11 @@
             "type": "object",
             "title": "Stop Loss"
           },
+          "inventory_liquidity": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Inventory Liquidity"
+          },
           "decision_signal_risk": {
             "$ref": "#/components/schemas/PortfolioDecisionSignalRiskBlock"
           }

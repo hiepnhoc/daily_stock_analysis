@@ -198,8 +198,74 @@ class PortfolioPr2TestCase(unittest.TestCase):
         self.assertIn("huatai", broker_map)
         self.assertIn("citic", broker_map)
         self.assertIn("cmb", broker_map)
+        self.assertIn("generic_vn", broker_map)
         self.assertIn("zhongxin", broker_map["citic"]["aliases"])
         self.assertIn("zhaoshang", broker_map["cmb"]["aliases"])
+        self.assertEqual(broker_map["generic_vn"]["aliases"], [])
+
+    def test_vn_generic_import_normalizes_vietnamese_columns_and_settlement(self) -> None:
+        csv_text = (
+            "Ngày giao dịch,Mã CK,Mua/Bán,Khối lượng khớp,Giá khớp,Phí giao dịch,Thuế,Số lệnh,Ngày thanh toán\n"
+            "29/04/2026,FPT,Mua,100,100.000,15.000,0,VN-001,05/05/2026\n"
+        )
+        parsed = self.import_service.parse_trade_csv(
+            broker="generic_vn",
+            content=csv_text.encode("utf-8"),
+            price_unit="vnd",
+        )
+
+        self.assertEqual(parsed["broker"], "generic_vn")
+        self.assertEqual(parsed["record_count"], 1)
+        record = parsed["records"][0]
+        self.assertEqual(record["symbol"], "FPT")
+        self.assertEqual(record["side"], "buy")
+        self.assertEqual(record["price"], 100000.0)
+        self.assertEqual(record["fee"], 15000.0)
+        self.assertEqual(record["market"], "vn")
+        self.assertEqual(record["currency"], "VND")
+        self.assertEqual(record["settlement_date"], date(2026, 5, 5))
+        self.assertFalse(record["settlement_estimated"])
+
+    def test_vn_generic_import_requires_explicit_price_unit(self) -> None:
+        csv_text = (
+            "Ngày giao dịch,Mã CK,Mua/Bán,Khối lượng khớp,Giá khớp\n"
+            "29/04/2026,FPT,Mua,100,100\n"
+        )
+        with self.assertRaisesRegex(ValueError, "price_unit is required"):
+            self.import_service.parse_trade_csv(
+                broker="generic_vn",
+                content=csv_text.encode("utf-8"),
+            )
+
+        parsed = self.import_service.parse_trade_csv(
+            broker="generic_vn",
+            content=csv_text.encode("utf-8"),
+            price_unit="thousand_vnd",
+        )
+        self.assertEqual(parsed["records"][0]["price"], 100000.0)
+
+    def test_vn_import_rejects_market_mismatch_before_writing(self) -> None:
+        account = self.service.create_account(name="CN", broker="Demo", market="cn", base_currency="CNY")
+        result = self.import_service.commit_trade_records(
+            account_id=account["id"],
+            broker="generic_vn",
+            records=[{
+                "trade_date": "2026-04-29",
+                "symbol": "FPT",
+                "side": "buy",
+                "quantity": 100,
+                "price": 100000,
+                "fee": 0,
+                "tax": 0,
+                "market": "vn",
+                "currency": "VND",
+            }],
+            dry_run=True,
+        )
+
+        self.assertEqual(result["inserted_count"], 0)
+        self.assertEqual(result["failed_count"], 1)
+        self.assertIn("market", result["errors"][0].lower())
 
     def test_import_preserves_leading_zero_symbol(self) -> None:
         csv_text = (
@@ -469,6 +535,50 @@ class PortfolioPr2TestCase(unittest.TestCase):
         positions = {item["symbol"]: item for item in report["concentration"]["top_positions"]}
         self.assertIn("AAPL", positions)
         self.assertAlmostEqual(positions["AAPL"]["market_value_base"], 700.0, places=6)
+
+    def test_vn_risk_reports_inventory_liquidity_and_sector_action_plan(self) -> None:
+        account = self.service.create_account(name="VN", broker="SSI", market="vn", base_currency="VND")
+        aid = account["id"]
+        self.service.import_opening_positions(
+            account_id=aid,
+            as_of=date(2026, 1, 5),
+            import_id="risk-opening-vn",
+            holdings=[{
+                "symbol": "FPT",
+                "quantity": 100,
+                "avg_cost": 100000,
+                "sellable_quantity": 60,
+                "pending_quantity": 40,
+            }],
+        )
+        self.db.save_daily_data(
+            pd.DataFrame([{
+                "date": date(2026, 1, 5),
+                "open": 100000,
+                "high": 100000,
+                "low": 100000,
+                "close": 100000,
+                "volume": 10,
+                "amount": 1000000,
+                "pct_chg": 0.0,
+            }]),
+            code="FPT",
+            data_source="portfolio-risk-vn-test",
+        )
+
+        report = self.risk_service.get_risk_report(account_id=aid, as_of=date(2026, 1, 5), cost_method="fifo")
+
+        inventory = report["inventory_liquidity"]
+        self.assertEqual(inventory["sellable_quantity"], 60.0)
+        self.assertEqual(inventory["pending_quantity"], 40.0)
+        self.assertAlmostEqual(inventory["pending_weight_pct"], 40.0, places=4)
+        self.assertTrue(inventory["pending_alert"])
+        self.assertTrue(inventory["liquidity"]["items"][0]["is_alert"])
+        self.assertTrue(any(item["code"] == "pending_inventory" for item in inventory["action_plan"]))
+
+        sectors = report["sector_concentration"]["top_sectors"]
+        self.assertEqual(sectors[0]["sector"], "Công nghệ")
+        self.assertEqual(report["sector_concentration"]["coverage"]["classified_count"], 1)
 
     def test_sector_concentration_uses_unclassified_for_non_cn(self) -> None:
         us_account = self.service.create_account(name="US", broker="Demo", market="us", base_currency="USD")

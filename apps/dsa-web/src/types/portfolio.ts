@@ -10,7 +10,7 @@ export interface PortfolioAccountItem {
   ownerId?: string | null;
   name: string;
   broker?: string | null;
-  market: 'cn' | 'hk' | 'us' | 'jp' | 'kr';
+  market: 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'vn';
   baseCurrency: string;
   isActive: boolean;
   createdAt?: string | null;
@@ -24,7 +24,7 @@ export interface PortfolioAccountListResponse {
 export interface PortfolioAccountCreateRequest {
   name: string;
   broker?: string;
-  market: 'cn' | 'hk' | 'us' | 'jp' | 'kr';
+  market: 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'vn';
   baseCurrency: string;
   ownerId?: string;
 }
@@ -46,6 +46,10 @@ export interface PortfolioPositionItem {
   priceDate?: string | null;
   priceStale?: boolean;
   priceAvailable?: boolean;
+  sellableQuantity?: number;
+  pendingQuantity?: number;
+  nextSettlementDate?: string | null;
+  settlementEstimated?: boolean;
 }
 
 export interface PortfolioPositionAnalysisRequest {
@@ -142,6 +146,34 @@ export interface PortfolioDecisionSignalRiskBlock {
   items: PortfolioDecisionSignalRiskItem[];
 }
 
+export interface PortfolioInventoryLiquidityBlock {
+  totalQuantity: number;
+  sellableQuantity: number;
+  pendingQuantity: number;
+  pendingMarketValueBase: number;
+  pendingWeightPct: number;
+  pendingAlertThresholdPct: number;
+  pendingAlert: boolean;
+  liquidity: {
+    participationRate: number;
+    maxDaysThreshold: number;
+    alertCount: number;
+    items: Array<{
+      accountId?: number | null;
+      symbol: string;
+      marketValueBase: number;
+      avgTradedValue20?: number | null;
+      amountCoverage: number;
+      latestDate?: string | null;
+      participationRate: number;
+      daysToLiquidate?: number | null;
+      available: boolean;
+      isAlert: boolean;
+    }>;
+  };
+  actionPlan: Array<{ code: string; severity: string; action: string }>;
+}
+
 export interface PortfolioRiskResponse {
   asOf: string;
   accountId?: number | null;
@@ -169,6 +201,7 @@ export interface PortfolioRiskResponse {
     nearCount: number;
     items: PortfolioStopLossItem[];
   };
+  inventoryLiquidity?: PortfolioInventoryLiquidityBlock;
   decisionSignalRisk?: PortfolioDecisionSignalRiskBlock;
 }
 
@@ -181,10 +214,34 @@ export interface PortfolioTradeCreateRequest {
   price: number;
   fee?: number;
   tax?: number;
-  market?: 'cn' | 'hk' | 'us' | 'jp' | 'kr';
+  market?: 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'vn';
   currency?: string;
   tradeUid?: string;
+  settlementDate?: string;
+  settlementEstimated?: boolean;
   note?: string;
+}
+
+export interface PortfolioOpeningPositionItem {
+  symbol: string;
+  quantity: number;
+  avgCost: number;
+  sellableQuantity: number;
+  pendingQuantity: number;
+}
+
+export interface PortfolioOpeningPositionsRequest {
+  accountId: number;
+  asOf: string;
+  importId: string;
+  holdings: PortfolioOpeningPositionItem[];
+}
+
+export interface PortfolioOpeningPositionsResponse {
+  accountId: number;
+  importId: string;
+  insertedEvents: number;
+  holdings: number;
 }
 
 export interface PortfolioCashLedgerCreateRequest {
@@ -201,7 +258,7 @@ export interface PortfolioCorporateActionCreateRequest {
   symbol: string;
   effectiveDate: string;
   actionType: PortfolioCorporateActionType;
-  market?: 'cn' | 'hk' | 'us' | 'jp' | 'kr';
+  market?: 'cn' | 'hk' | 'us' | 'jp' | 'kr' | 'vn';
   currency?: string;
   cashDividendPerShare?: number;
   splitRatio?: number;
@@ -229,6 +286,9 @@ export interface PortfolioTradeListItem {
   price: number;
   fee: number;
   tax: number;
+  settlementDate?: string | null;
+  settlementEstimated?: boolean;
+  affectsCash?: boolean;
   note?: string | null;
   createdAt?: string | null;
 }
@@ -289,7 +349,10 @@ export interface PortfolioImportTradeItem {
   tax: number;
   tradeUid?: string | null;
   dedupHash: string;
+  market?: string | null;
   currency?: string | null;
+  settlementDate?: string | null;
+  settlementEstimated?: boolean | null;
 }
 
 export interface PortfolioImportParseResponse {
