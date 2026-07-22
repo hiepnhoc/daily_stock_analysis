@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, Iterable
 
 import requests
@@ -11,6 +12,18 @@ _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120 Safari/537.36",
     "Referer": "https://iboard.ssi.com.vn/",
 }
+
+_FAILURE_COOLDOWN_SECONDS = 30.0
+_failure_until = 0.0
+
+
+def _circuit_is_open() -> bool:
+    return time.monotonic() < _failure_until
+
+
+def _mark_source_failure() -> None:
+    global _failure_until
+    _failure_until = time.monotonic() + _FAILURE_COOLDOWN_SECONDS
 
 
 def _rows(payload: Any) -> Iterable[Dict[str, Any]]:
@@ -42,15 +55,16 @@ def _float(value: Any) -> float | None:
         return None
 
 
-def fetch_live_quote(ticker: str, timeout: int = 10) -> Dict[str, Any]:
+def fetch_live_quote(ticker: str, timeout: float = 3.0) -> Dict[str, Any]:
     symbol = ticker.strip().upper()
-    if not symbol:
+    if not symbol or _circuit_is_open():
         return {}
     try:
         response = requests.get(f"{_BASE_URL}/stock/{symbol}", headers=_HEADERS, timeout=timeout)
         response.raise_for_status()
         payload = response.json()
     except Exception:
+        _mark_source_failure()
         return {}
     row = next(iter(_rows(payload)), payload if isinstance(payload, dict) else {})
     if not isinstance(row, dict):

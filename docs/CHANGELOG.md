@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] Portfolio T+ tự bootstrap account VN đầu tiên từ ledger SQLite khi mở app, hỗ trợ chọn tài khoản VN, hiển thị currency/as-of/số vị thế và đánh dấu rõ bản nháp khác ledger; account đã có holdings không còn hiện opening-import để tránh cộng trùng, buộc sửa qua sổ trade/event.
+- [测试] Vertical slice canonical VN Portfolio: frontend full suite `86 files, 838 passed, 2 skipped`, VNMarketPage `7 passed`, backend focused `89 passed`, ESLint 0 errors, production build 3226 modules, browser smoke xác nhận `VN Portfolio · VND · 16 vị thế · dữ liệu 2026-07-22`, draft reload/restore pass.
+- [修复] VN Market 手动/自动 refresh 不再在 `Promise.allSettled()` 全部失败或部分失败时伪造“最后成功”时间；UI 分别显示 full/partial/all-failed 状态并保留旧数据，新增 3 个回归测试。
+- [修复] Portfolio snapshot giới hạn SSI live-quote timeout, mở circuit-breaker khi nguồn lỗi, không cascade mã VN sang provider chain A/H/US và dùng last-known-good position cache với stale flag; single-account snapshot giữ đúng base currency nên tài khoản VN hiển thị VND thay vì CNY.
+- [文档] 新增 `docs/vn-trading-workstation-blueprint.md`，记录 VN/T+ workstation 当前运行基线、目标数据闭环、P0/P1/P2 backlog、acceptance criteria 与本次首个 P0 vertical slice。
+- [测试] Portfolio/VN backend focused suite 89 passed；新增 SSI circuit-breaker、VN cached-price fallback 与 VND single-account currency 回归测试；frontend full suite 在 `--maxWorkers=4` 下 86 files / 838 passed / 2 skipped，ESLint 0 errors，production build 通过。
+- [修复] VN Market 将 Tổng quan 启动失败与其他 tab 的操作错误隔离，避免 Portfolio T+ 显示误导性的 backend banner；单股分析在 chart 请求失败时仍保留 technical/action plan/news，并默认展开 news/catalyst 区域。
 - [新功能] VN Portfolio settlement 使用版本化 HOSE/HNX 2026 交易日历计算 T+2；已覆盖年份跳过官方节假日并返回 `settlement_estimated=false`，未知年份保留工作日 fallback 与 estimated 标记。
 - [新功能] Portfolio CSV 导入新增不绑定券商的 `generic_vn` 模板，支持 UTF-8 BOM/CP1258、越南日期与数字格式、结算日 metadata、preview/dedup/market guard，并要求明确选择 VND 实价或千 VND；未宣称兼容 SSI/VPS/TCBS/VNDIRECT 私有导出格式。
 - [新功能] Portfolio 风险报告新增 sellable/pending T+ 库存、共享 VN 行业分类、近 20 期成交额覆盖、20% 参与率下的预计退出天数与确定性 action plan；Web 新增 “T+ inventory & liquidity” 卡片。

@@ -905,6 +905,31 @@ class PortfolioRepository:
                     identities.append(identity)
             return identities
 
+    def get_latest_cached_position_price(
+        self,
+        *,
+        symbol: str,
+        market: str,
+    ) -> Optional[Tuple[float, datetime]]:
+        """Return the latest positive cached valuation for one market symbol."""
+        with self.db.get_session() as session:
+            row = session.execute(
+                select(PortfolioPosition.last_price, PortfolioPosition.updated_at)
+                .where(
+                    and_(
+                        PortfolioPosition.symbol == symbol,
+                        PortfolioPosition.market == market,
+                        PortfolioPosition.quantity > 0,
+                        PortfolioPosition.last_price > 0,
+                    )
+                )
+                .order_by(desc(PortfolioPosition.updated_at), desc(PortfolioPosition.id))
+                .limit(1)
+            ).first()
+            if row is None:
+                return None
+            return float(row.last_price), row.updated_at
+
     # ------------------------------------------------------------------
     # Snapshot / position cache
     # ------------------------------------------------------------------

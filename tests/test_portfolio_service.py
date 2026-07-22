@@ -8,11 +8,11 @@ import sqlite3
 import tempfile
 import threading
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pandas as pd
 from sqlalchemy.exc import OperationalError
@@ -135,6 +135,53 @@ class PortfolioServiceTestCase(unittest.TestCase):
         self.assertEqual(pos["price_source"], "realtime_quote")
         self.assertEqual(pos["price_provider"], "unit-test")
         self.assertTrue(pos["price_available"])
+
+    def test_current_vn_price_uses_bounded_ssi_then_cached_price_without_generic_fallback(self) -> None:
+        repo = Mock()
+        repo.get_latest_close_with_date.return_value = None
+        repo.get_latest_cached_position_price.return_value = (
+            36150.0,
+            datetime(2026, 7, 21, 15, 5),
+        )
+        service = PortfolioService(repo=repo)
+
+        with patch("src.vn.data.ssi_iboard.fetch_live_quote", return_value={}) as live_quote, \
+             patch.object(
+                 PortfolioService,
+                 "_fetch_realtime_position_price",
+                 side_effect=AssertionError("VN must not use the generic realtime provider chain"),
+             ):
+            price = service._resolve_position_price(
+                symbol="BID",
+                market="vn",
+                as_of_date=date.today(),
+            )
+
+        live_quote.assert_called_once_with("BID", timeout=2.0)
+        self.assertEqual(price.price, 36150.0)
+        self.assertEqual(price.source, "portfolio_cache")
+        self.assertEqual(price.provider, "portfolio_positions")
+        self.assertTrue(price.is_available)
+        self.assertTrue(price.is_stale)
+
+    def test_single_vn_account_snapshot_retains_vnd_reporting_currency(self) -> None:
+        aid = self._create_account_with_position(
+            market="vn",
+            currency="VND",
+            symbol="BID",
+            price=30000.0,
+            close=36150.0,
+            close_date=date(2026, 1, 3),
+        )
+
+        snapshot = self.service.get_portfolio_snapshot(
+            account_id=aid,
+            as_of=date(2026, 1, 3),
+            cost_method="fifo",
+        )
+
+        self.assertEqual(snapshot["currency"], "VND")
+        self.assertEqual(snapshot["accounts"][0]["base_currency"], "VND")
 
     def test_current_snapshot_prefers_realtime_price_over_stale_close(self) -> None:
         today = date.today()

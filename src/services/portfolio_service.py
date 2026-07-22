@@ -37,6 +37,7 @@ VALID_SIDES = {"buy", "sell"}
 VALID_CASH_DIRECTIONS = {"in", "out"}
 VALID_CORPORATE_ACTIONS = {"cash_dividend", "split_adjustment"}
 PORTFOLIO_FX_REFRESH_DISABLED_REASON = "portfolio_fx_update_disabled"
+VN_REALTIME_QUOTE_TIMEOUT_SECONDS = 2.0
 
 
 class PortfolioConflictError(Exception):
@@ -554,7 +555,13 @@ class PortfolioService:
             account_rows = self.repo.list_accounts(include_inactive=False)
 
         accounts_payload: List[Dict[str, Any]] = []
-        aggregate_currency = "CNY"
+        # A single selected account must retain its native reporting currency.
+        # Only an all-account aggregation needs a common conversion currency.
+        aggregate_currency = (
+            str(account_rows[0].base_currency)
+            if account_id is not None and len(account_rows) == 1
+            else "CNY"
+        )
         aggregate = {
             "total_cash": 0.0,
             "total_market_value": 0.0,
@@ -1222,7 +1229,7 @@ class PortfolioService:
             try:
                 from src.vn.data.ssi_iboard import fetch_live_quote
 
-                quote = fetch_live_quote(symbol)
+                quote = fetch_live_quote(symbol, timeout=VN_REALTIME_QUOTE_TIMEOUT_SECONDS)
                 vn_price = self._normalize_vn_price(quote.get("price"))
                 if vn_price is not None:
                     return _ResolvedPositionPrice(
@@ -1236,7 +1243,11 @@ class PortfolioService:
             except Exception as exc:
                 logger.warning("Failed to fetch VN realtime portfolio price for %s: %s", symbol, exc)
 
-        if as_of_date == today:
+        # VN positions must not cascade into the generic A/H/US realtime
+        # provider chain after SSI is unavailable. That fallback can retry
+        # several unrelated providers per symbol and block a portfolio page
+        # with many holdings for minutes.
+        if as_of_date == today and market_norm != "vn":
             realtime_price, provider = self._fetch_realtime_position_price(symbol)
             if realtime_price is not None and realtime_price > 0:
                 return _ResolvedPositionPrice(
@@ -1260,6 +1271,27 @@ class PortfolioService:
                     price_date=close_date,
                     is_stale=close_date < as_of_date,
                     is_available=True,
+                )
+
+        try:
+            cached = self.repo.get_latest_cached_position_price(symbol=symbol, market=market_norm)
+        except AttributeError:
+            cached = None
+        if cached is not None:
+            cached_price, cached_at = cached
+            normalized_cached = (
+                self._normalize_vn_price(cached_price)
+                if market_norm == "vn"
+                else float(cached_price)
+            )
+            if normalized_cached is not None and normalized_cached > 0:
+                return _ResolvedPositionPrice(
+                    price=float(normalized_cached),
+                    source="portfolio_cache",
+                    price_date=cached_at.date(),
+                    is_stale=True,
+                    is_available=True,
+                    provider="portfolio_positions",
                 )
 
         return _ResolvedPositionPrice(
