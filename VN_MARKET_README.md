@@ -18,6 +18,8 @@ Bản fork/local của `daily_stock_analysis` để thêm tab riêng cho thị t
   - `POST /api/v1/vn/report`
 - VNDIRECT daily OHLCV fetcher.
 - SSI iBoard breadth/live quote adapter best-effort.
+- DNSE OpenAPI read-only adapter (daily/intraday OHLC REST, latest trade, native WebSocket protocol) làm primary khi có key.
+- SSI FastConnect API v3 read-only adapter giữ vai trò fallback OHLCV/breadth; VNDIRECT/iBoard là fallback cuối; trading/execution luôn disabled.
 - Indicator stack: EMA20, EMA60, MA50, MA200, RSI14, MACD, Vol20, ATR14.
 - VN T+ ActionPlan: action, score, buy zone, breakout, stop, targets, size, reasons, risk flags.
 - Analyze Stock VN panel for one-ticker action plan.
@@ -86,6 +88,109 @@ cd /Users/hiepln/github/hermes-agent/knowledge/daily_stock_analysis_vn/apps/dsa-
 npm run build
 ```
 
+## Cấu hình DNSE OpenAPI
+
+DNSE là primary cho OHLCV/latest trade khi đủ key. Integration chỉ dùng **Market Data read-only**; không gọi account, OTP, trading-token hay order endpoint.
+
+```bash
+VN_MARKET_DATA_PROVIDER=auto
+DNSE_API_KEY=...
+DNSE_API_SECRET=...
+VN_DNSE_PRICE_UNIT=thousand_vnd
+```
+
+- `auto`: DNSE → SSI FastConnect nếu có key → VNDIRECT.
+- `dnse` hoặc `dnse_openapi`: ép thử DNSE trước nhưng vẫn fail-soft qua SSI/VNDIRECT.
+- `ssi_fastconnect`: bỏ qua DNSE và dùng SSI → VNDIRECT.
+- `vndirect`: chỉ dùng VNDIRECT cho OHLCV.
+- Breadth chưa có contract tổng hợp từ DNSE nên tiếp tục dùng SSI FastConnect hoặc SSI iBoard.
+- `VN_DNSE_PRICE_UNIT`: `thousand_vnd` hoặc `vnd`; không đoán đơn vị theo magnitude.
+- REST adapter gọi trực tiếp `/price/ohlc` và `/price/{symbol}/trades/latest` bằng HMAC-SHA256.
+- WebSocket dùng native protocol theo tài liệu DNSE hiện tại, hỗ trợ tick, quote 3 mức giá và OHLC 1m. Không dùng stream runner của `dnse==0.5.0` vì package đang gửi sai kiểu `nonce` và thiếu subscribe envelope so với live server.
+
+Kiểm tra trạng thái:
+
+```bash
+.venv/bin/python scripts/smoke_dnse_openapi.py --status-only
+curl http://127.0.0.1:8000/api/v1/vn/providers
+```
+
+Sau khi điền key, smoke REST:
+
+```bash
+.venv/bin/python scripts/smoke_dnse_openapi.py --ticker HPG --days 5
+```
+
+Smoke REST + WebSocket 30 giây:
+
+```bash
+.venv/bin/python scripts/smoke_dnse_openapi.py --ticker HPG --days 5 --stream-seconds 30
+```
+
+### DNSE intraday T+ watcher
+
+Watcher sử dụng ActionPlan trên nến hoàn tất và DNSE latest trade để kiểm tra mỗi phút:
+
+- vào vùng mua nhưng vẫn đạt R:R tối thiểu;
+- breakout có volume xác nhận;
+- chạm stop/target;
+- volume/Vol20 spike;
+- anti-FOMO khi vượt `buy_high` nhưng R:R T1 dưới 1,2.
+
+```bash
+AGENT_EVENT_MONITOR_ENABLED=true
+AGENT_EVENT_MONITOR_INTERVAL_MINUTES=1
+```
+
+API:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/vn/intraday-watch/bootstrap \
+  -H 'Content-Type: application/json' \
+  -d '{"watchlist":["HPG","FPT","SSI"],"cooldownSeconds":900}'
+
+curl -X POST http://127.0.0.1:8000/api/v1/vn/intraday-watch/check \
+  -H 'Content-Type: application/json' \
+  -d '{"watchlist":["HPG","FPT","SSI"]}'
+```
+
+Web: mở **VN Market → Cảnh báo & Nhật ký**, bấm **Bật DNSE watcher**. Bootstrap là idempotent; mỗi signal/ticker chỉ ghi một trigger mỗi ngày để không spam khi chưa cấu hình notification channel. Alert Center vẫn lưu trigger cục bộ ngay cả khi Telegram/Discord/Webhook chưa được cấu hình.
+
+Hiện worker production là polling 1 phút bằng latest-trade REST. Native WebSocket vẫn dùng cho bounded stream/smoke; reconnect/gap/out-of-order metrics phải được soak-test trước khi thay polling bằng collector liên tục.
+
+## Cấu hình SSI FastConnect v3 fallback
+
+SSI integration vẫn chỉ dùng **Market Data read-only**; không có private key, OTP, account hay order endpoint.
+
+```bash
+VN_MARKET_DATA_PROVIDER=auto
+SSI_FASTCONNECT_CLIENT_ID=...
+SSI_FASTCONNECT_API_KEY=...
+SSI_FASTCONNECT_API_SECRET=...
+VN_SSI_PRICE_UNIT=thousand_vnd
+```
+
+- `auto`: SSI chỉ đứng sau DNSE cho OHLCV khi cả hai có key; SSI vẫn được ưu tiên cho breadth vì DNSE chưa có contract breadth tổng hợp.
+- `ssi_fastconnect`: ép SSI làm OHLCV primary và fail-soft về VNDIRECT.
+- `vndirect`: bỏ qua cả DNSE/SSI cho OHLCV.
+- `VN_SSI_PRICE_UNIT` phải khai báo đúng contract key: `thousand_vnd` hoặc `vnd`; hệ thống không đoán đơn vị theo độ lớn giá.
+- Token chỉ cache trong RAM của process, không ghi xuống repository hoặc `token_cache.json`.
+
+Kiểm tra trạng thái không lộ secrets:
+
+```bash
+.venv/bin/python scripts/smoke_ssi_fastconnect.py --status-only
+curl http://127.0.0.1:8000/api/v1/vn/providers
+```
+
+Sau khi điền key, chạy authenticated smoke test:
+
+```bash
+.venv/bin/python scripts/smoke_ssi_fastconnect.py --ticker HPG --days 5
+```
+
+Kết quả smoke gồm số bars, bar mới nhất, VNINDEX summary và rate-limit headers nếu SSI trả về. Không commit file `.env`.
+
 ## Cấu hình news/catalyst
 
 ```bash
@@ -103,6 +208,6 @@ Analyze luôn kiểm tra news. Nút **Kiểm tra Portfolio** cũng lấy news/ca
 
 ## Lưu ý
 
-- Node hiện tại có warning engine vì `node v22.0.0`, trong khi Vite/jsdom muốn `>=22.12` hoặc `20.19+`. Build vẫn pass, nhưng nên nâng Node nếu muốn sạch warning.
+- `/usr/local/bin/node` hiện là v22.0.0, thấp hơn yêu cầu của Vite/jsdom. Dùng Homebrew Node 26 (`PATH="/opt/homebrew/opt/node/bin:$PATH"`) cho frontend test/build sạch engine warning.
 - News/catalyst là evidence best-effort, không tự động biến thành lệnh mua/bán; một nguồn hỏng không chặn technical/portfolio.
 - Sector flow hiện vẫn dùng mapping ngành cục bộ; bước tiếp theo là taxonomy/provider ngành và portfolio risk theo sector/liquidity.

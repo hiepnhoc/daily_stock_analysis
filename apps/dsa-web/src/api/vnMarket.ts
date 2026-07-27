@@ -180,6 +180,26 @@ export interface VNAlertRuleResult {
   score?: number;
 }
 
+export interface VNIntradayWatchItem {
+  ticker: string;
+  triggered: boolean;
+  signal?: string | null;
+  severity: 'info' | 'warning' | 'critical';
+  observedValue?: number | null;
+  threshold?: number | null;
+  riskReward?: number | null;
+  volumeRatio?: number | null;
+  dataTimestamp?: string | null;
+  message: string;
+  source: 'dnse_openapi';
+}
+
+export interface VNIntradayBootstrapResponse {
+  created: number;
+  reused: number;
+  items: Array<{ id: number; target: string; alert_type?: string; alertType?: string }>;
+}
+
 export interface VNJournalItem {
   id: string;
   createdAt: string;
@@ -264,6 +284,16 @@ export const vnMarketApi = {
 
   async checkAlertRules(rules: VNAlertRule[]): Promise<{ items: VNAlertRuleResult[] }> {
     const { data } = await apiClient.post<{ items: VNAlertRuleResult[] }>('/api/v1/vn/alerts/rules/check', { rules });
+    return data;
+  },
+
+  async checkIntradayWatch(watchlist: string[]): Promise<{ items: VNIntradayWatchItem[] }> {
+    const { data } = await apiClient.post<{ items: VNIntradayWatchItem[] }>('/api/v1/vn/intraday-watch/check', { watchlist });
+    return data;
+  },
+
+  async bootstrapIntradayWatch(watchlist: string[], cooldownSeconds = 900): Promise<VNIntradayBootstrapResponse> {
+    const { data } = await apiClient.post<VNIntradayBootstrapResponse>('/api/v1/vn/intraday-watch/bootstrap', { watchlist, cooldownSeconds });
     return data;
   },
 

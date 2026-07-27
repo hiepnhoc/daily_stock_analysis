@@ -79,18 +79,27 @@ _TICKER_NAME_MAP = {
 }
 
 
+def _frame_source(df: pd.DataFrame | None) -> str:
+    if df is None:
+        return "unknown"
+    return str(df.attrs.get("source") or "vndirect")
+
+
 def _technical_for_ticker(ticker: str) -> tuple[TechnicalSnapshot | None, Dict[str, DataQuality]]:
     df = provider.get_daily_bars(ticker, days=260)
+    source = _frame_source(df)
     if df is None or df.empty:
-        return None, {"ohlcv": DataQuality(status="missing", source="vndirect", warnings=["no_ohlcv_data"])}
+        return None, {"ohlcv": DataQuality(status="missing", source=source, warnings=["no_ohlcv_data"])}
     enriched = add_indicators(df)
     snapshot = latest_technical_snapshot(enriched)
-    return TechnicalSnapshot(**snapshot), {"ohlcv": DataQuality(status="available", source="vndirect")}
+    status = "fallback" if df.attrs.get("fallback_from") else "available"
+    warnings = [f"fallback_from:{df.attrs['fallback_from']}"] if df.attrs.get("fallback_from") else []
+    return TechnicalSnapshot(**snapshot), {"ohlcv": DataQuality(status=status, source=source, warnings=warnings)}
 
 
 def get_market_overview() -> dict:
     market = build_market_context()
-    breadth_snapshot = ssi_iboard.fetch_exchange_breadth("hose")
+    breadth_snapshot = provider.get_exchange_breadth("hose")
     breadth = {
         "advancers": int(breadth_snapshot.get("advancers") or 0),
         "decliners": int(breadth_snapshot.get("decliners") or 0),
@@ -100,17 +109,18 @@ def get_market_overview() -> dict:
     }
     warnings = list(market.warnings)
     if not breadth_snapshot:
-        warnings.append("Không lấy được SSI iBoard breadth, breadth đang để 0")
+        warnings.append("Không lấy được SSI FastConnect/iBoard breadth, breadth đang để 0")
     return {
-        "refDate": datetime.now().date().isoformat(),
+        "refDate": breadth_snapshot.get("tradingDate") or datetime.now().date().isoformat(),
         "indices": [
             {
                 "code": "VNINDEX",
                 "name": "VNINDEX",
-                "close": market.vnindexClose,
-                "changePct": market.vnindexChangePct,
+                "close": breadth_snapshot.get("indexValue") or market.vnindexClose,
+                "changePct": breadth_snapshot.get("changePct") if breadth_snapshot.get("changePct") is not None else market.vnindexChangePct,
                 "volume": None,
-                "value": None,
+                "value": breadth_snapshot.get("totalValue"),
+                "source": breadth_snapshot.get("source") or market.dataQuality.get("vnindex", DataQuality(status="missing")).source,
             }
         ],
         "breadth": breadth,
@@ -122,11 +132,12 @@ def get_market_overview() -> dict:
 
 def build_market_context() -> VNMarketContext:
     df = provider.get_daily_bars("VNINDEX", days=260)
+    source = _frame_source(df)
     if df is None or df.empty:
         return VNMarketContext(
             marketBias="neutral",
             warnings=["Không lấy được VNINDEX, dùng market bias neutral"],
-            dataQuality={"vnindex": DataQuality(status="missing", source="vndirect")},
+            dataQuality={"vnindex": DataQuality(status="missing", source=source)},
         )
     enriched = add_indicators(df)
     snap = latest_technical_snapshot(enriched)
@@ -148,7 +159,7 @@ def build_market_context() -> VNMarketContext:
         marketBias=bias,
         vnindexClose=close,
         warnings=warnings,
-        dataQuality={"vnindex": DataQuality(status="available", source="vndirect")},
+        dataQuality={"vnindex": DataQuality(status="available", source=source)},
     )
 
 
@@ -191,11 +202,12 @@ def ticker_chart(ticker: str, days: int = 160) -> dict:
     lookback = max(int(days or 160), 60)
     # Fetch enough history for MA200, then trim to requested chart window.
     df = provider.get_daily_bars(symbol, days=max(260, lookback + 220))
+    source = _frame_source(df)
     if df is None or df.empty:
         return {
             "ticker": symbol,
             "items": [],
-            "dataQuality": {"ohlcv": DataQuality(status="missing", source="vndirect", warnings=["no_ohlcv_data"]).model_dump(mode="json")},
+            "dataQuality": {"ohlcv": DataQuality(status="missing", source=source, warnings=["no_ohlcv_data"]).model_dump(mode="json")},
         }
     enriched = add_indicators(df).tail(lookback)
     items = []
@@ -227,7 +239,7 @@ def ticker_chart(ticker: str, days: int = 160) -> dict:
     return {
         "ticker": symbol,
         "items": items,
-        "dataQuality": {"ohlcv": DataQuality(status="available", source="vndirect").model_dump(mode="json")},
+        "dataQuality": {"ohlcv": DataQuality(status="available", source=source).model_dump(mode="json")},
     }
 
 

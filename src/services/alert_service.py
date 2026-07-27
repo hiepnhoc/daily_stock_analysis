@@ -56,6 +56,12 @@ from src.services.market_light_alerts import (
     normalize_market_alert_parameters,
 )
 from src.services.market_light_service import normalize_market_region
+from src.services.vn_tplus_alerts import (
+    VN_TPLUS_ALERT_TYPES,
+    VNTPlusSetupAlert,
+    evaluate_vn_tplus_live,
+    normalize_vn_tplus_parameters,
+)
 from src.services.decision_signal_summary import summarize_decision_signal
 from src.analysis_context_pack_overview import (
     ANALYSIS_CONTEXT_PACK_OVERVIEW_KEY,
@@ -73,7 +79,7 @@ from src.utils.sanitize import sanitize_diagnostic_text
 
 
 LEGACY_RUNTIME_ALERT_TYPES = frozenset({"price_cross", "price_change_percent", "volume_spike"})
-SYMBOL_ALERT_TYPES = LEGACY_RUNTIME_ALERT_TYPES | TECHNICAL_ALERT_TYPES
+SYMBOL_ALERT_TYPES = LEGACY_RUNTIME_ALERT_TYPES | TECHNICAL_ALERT_TYPES | VN_TPLUS_ALERT_TYPES
 SUPPORTED_ALERT_TYPES = SYMBOL_ALERT_TYPES | PORTFOLIO_ALERT_TYPES | MARKET_ALERT_TYPES
 SUPPORTED_TARGET_SCOPES = frozenset({"single_symbol", "watchlist", "portfolio_holdings", "portfolio_account", "market"})
 SUPPORTED_SEVERITIES = frozenset({"info", "warning", "critical"})
@@ -217,6 +223,8 @@ class AlertService:
             return await self._evaluate_volume(rule)
         if isinstance(rule, TechnicalIndicatorAlert):
             return await self._evaluate_technical_indicator(rule, daily_cache=daily_cache)
+        if isinstance(rule, VNTPlusSetupAlert):
+            return await self._evaluate_vn_tplus_setup(rule)
         if isinstance(rule, PortfolioRiskAlert):
             return await asyncio.to_thread(evaluate_portfolio_risk_alert, rule)
         if isinstance(rule, MarketLightAlert):
@@ -611,6 +619,35 @@ class AlertService:
             data_timestamp=evaluation.data_timestamp,
         )
 
+    async def _evaluate_vn_tplus_setup(self, rule: VNTPlusSetupAlert) -> Dict[str, Any]:
+        try:
+            evaluation = await asyncio.to_thread(evaluate_vn_tplus_live, rule)
+        except Exception as exc:
+            return self._evaluation_error(rule, exc, data_source="dnse_openapi")
+        if evaluation.triggered:
+            signal_source = f"dnse_openapi:{evaluation.signal or 'vn_tplus'}"
+            signal_timestamp = (
+                evaluation.data_timestamp.replace(hour=0, minute=0, second=0, microsecond=0)
+                if evaluation.data_timestamp is not None
+                else None
+            )
+            return self._triggered(
+                rule,
+                evaluation.observed_value,
+                evaluation.message,
+                threshold=evaluation.threshold,
+                data_source=signal_source,
+                data_timestamp=signal_timestamp,
+            )
+        return self._not_triggered(
+            rule,
+            evaluation.observed_value,
+            evaluation.message,
+            threshold=evaluation.threshold,
+            data_source="dnse_openapi",
+            data_timestamp=evaluation.data_timestamp,
+        )
+
     def _triggered(
         self,
         rule,
@@ -701,6 +738,8 @@ class AlertService:
             if rule.alert_type == "market_light_score_drop":
                 return float(rule.parameters.get("min_drop", 0) or 0)
             return None
+        if isinstance(rule, VNTPlusSetupAlert):
+            return None
         return None
 
     @staticmethod
@@ -715,6 +754,8 @@ class AlertService:
             return "portfolio_risk"
         if isinstance(rule, MarketLightAlert):
             return MARKET_LIGHT_DATA_SOURCE
+        if isinstance(rule, VNTPlusSetupAlert):
+            return "dnse_openapi"
         return None
 
     @classmethod
@@ -977,6 +1018,12 @@ class AlertService:
             except ValueError as exc:
                 raise AlertServiceError(str(exc)) from exc
 
+        if alert_type in VN_TPLUS_ALERT_TYPES:
+            try:
+                return normalize_vn_tplus_parameters(parameters)
+            except ValueError as exc:
+                raise AlertServiceError(str(exc)) from exc
+
         if alert_type in PORTFOLIO_ALERT_TYPES:
             try:
                 return normalize_portfolio_alert_parameters(alert_type, parameters)
@@ -1138,6 +1185,12 @@ class AlertService:
                 stock_code=data["target"],
                 alert_type=data["alert_type"],
                 indicator_params=parameters,
+                metadata=metadata,
+            )
+        if data["alert_type"] in VN_TPLUS_ALERT_TYPES:
+            return VNTPlusSetupAlert(
+                stock_code=data["target"],
+                parameters=parameters,
                 metadata=metadata,
             )
         raise UnsupportedAlertTypeError(f"unsupported alert_type for Alert API: {data['alert_type']}")

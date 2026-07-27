@@ -7,6 +7,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.vn.services import vn_market_service
+from src.services.vn_tplus_alerts import bootstrap_vn_tplus_rules, check_vn_tplus_watchlist
 
 router = APIRouter()
 
@@ -69,6 +70,23 @@ class VNAlertRulesRequest(BaseModel):
     rules: List[VNAlertRule] = Field(default_factory=list)
 
 
+class VNIntradayWatchRequest(BaseModel):
+    watchlist: List[str] = Field(default_factory=list, max_length=50)
+    cooldownSeconds: int = Field(default=900, ge=0, le=86400)
+
+    @field_validator("watchlist")
+    @classmethod
+    def validate_watchlist(cls, values: List[str]) -> List[str]:
+        output: List[str] = []
+        for value in values:
+            symbol = value.strip().upper()
+            if len(symbol) != 3 or not symbol.isalpha() or not symbol.isascii():
+                raise ValueError("Mỗi mã theo dõi phải gồm đúng 3 chữ cái A-Z")
+            if symbol not in output:
+                output.append(symbol)
+        return output
+
+
 @router.get("/market-overview")
 def get_market_overview():
     return vn_market_service.get_market_overview()
@@ -77,6 +95,12 @@ def get_market_overview():
 @router.get("/readiness")
 def readiness():
     return {"status": "ready", "service": "vn-market"}
+
+
+@router.get("/providers")
+def providers():
+    """Expose secret-safe VN market-data provider diagnostics."""
+    return vn_market_service.provider.get_provider_status()
 
 
 @router.post("/scan")
@@ -115,6 +139,18 @@ def alerts_check(payload: VNScanRequest):
 @router.post("/alerts/rules/check")
 def alert_rules_check(payload: VNAlertRulesRequest):
     return vn_market_service.alert_rules_check([rule.model_dump() for rule in payload.rules])
+
+
+@router.post("/intraday-watch/check")
+def intraday_watch_check(payload: VNIntradayWatchRequest):
+    """Run a secret-safe live DNSE T+ check without writing alert history."""
+    return check_vn_tplus_watchlist(payload.watchlist)
+
+
+@router.post("/intraday-watch/bootstrap")
+def intraday_watch_bootstrap(payload: VNIntradayWatchRequest):
+    """Idempotently persist DNSE T+ rules in the shared Alert Center."""
+    return bootstrap_vn_tplus_rules(payload.watchlist, cooldown_seconds=payload.cooldownSeconds)
 
 
 @router.post("/journal")

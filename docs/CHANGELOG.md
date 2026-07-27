@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] VN Market chuyển primary official broker data sang DNSE OpenAPI read-only: authenticated HMAC REST OHLC/latest trade và native WebSocket tick/quote/OHLC đã live-verified; provider chain DNSE → SSI → VNDIRECT, breadth vẫn SSI/iBoard và execution hard-disabled.
+- [新功能] Thêm DNSE VN T+ intraday watcher vào Alert Center: bootstrap idempotent theo watchlist, live check buy-zone/breakout/stop/target/volume/R:R/anti-FOMO, cooldown 15 phút và dedupe theo signal/ticker/ngày; production monitor poll latest-trade mỗi phút, native WebSocket giữ cho bounded smoke.
+- [修复] Bỏ stream runner `dnse==0.5.0` khỏi runtime vì lệch protocol live (nonce integer, thiếu subscribe envelope); thêm native protocol client, explicit volume/value units và secret-safe bounded smoke.
+- [新功能] VN Market tích hợp SSI FastConnect API v3 read-only cho daily OHLCV và VNINDEX index summary/breadth; provider `auto` có fallback VNDIRECT/SSI iBoard, token chỉ cache trong RAM và execution luôn disabled.
+- [测试] Thêm SSI v3 adapter tests, secret-safe provider diagnostics endpoint `/api/v1/vn/providers` và smoke CLI `scripts/smoke_ssi_fastconnect.py`.
 - [改进] Portfolio T+ tự bootstrap account VN đầu tiên từ ledger SQLite khi mở app, hỗ trợ chọn tài khoản VN, hiển thị currency/as-of/số vị thế và đánh dấu rõ bản nháp khác ledger; account đã có holdings không còn hiện opening-import để tránh cộng trùng, buộc sửa qua sổ trade/event.
 - [测试] Vertical slice canonical VN Portfolio: frontend full suite `86 files, 838 passed, 2 skipped`, VNMarketPage `7 passed`, backend focused `89 passed`, ESLint 0 errors, production build 3226 modules, browser smoke xác nhận `VN Portfolio · VND · 16 vị thế · dữ liệu 2026-07-22`, draft reload/restore pass.
 - [修复] VN Market 手动/自动 refresh 不再在 `Promise.allSettled()` 全部失败或部分失败时伪造“最后成功”时间；UI 分别显示 full/partial/all-failed 状态并保留旧数据，新增 3 个回归测试。

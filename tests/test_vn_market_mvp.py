@@ -146,6 +146,58 @@ def test_vn_readiness_endpoint_is_lightweight(tmp_path: Path) -> None:
     assert response.json() == {"status": "ready", "service": "vn-market"}
 
 
+def test_vn_provider_status_endpoint_is_secret_safe(tmp_path: Path, monkeypatch) -> None:
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+    monkeypatch.delenv("DNSE_API_KEY", raising=False)
+    monkeypatch.delenv("DNSE_API_SECRET", raising=False)
+    monkeypatch.setenv("SSI_FASTCONNECT_CLIENT_ID", "client-id")
+    monkeypatch.setenv("SSI_FASTCONNECT_API_KEY", "api-key")
+    monkeypatch.setenv("SSI_FASTCONNECT_API_SECRET", "api-secret")
+
+    client = TestClient(create_app(static_dir=static_dir))
+    response = client.get("/api/v1/vn/providers")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["effectivePrimary"] == "ssi_fastconnect_v3"
+    assert payload["executionEnabled"] is False
+    serialized = response.text.lower()
+    assert "api-key" not in serialized
+    assert "api-secret" not in serialized
+    assert "client-id" not in serialized
+
+
+def test_vn_intraday_watch_bootstrap_endpoint_is_idempotent_contract(tmp_path: Path) -> None:
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    with patch(
+        "api.v1.endpoints.vn_market.bootstrap_vn_tplus_rules",
+        return_value={"created": 1, "reused": 1, "items": [{"id": 7, "target": "HPG"}, {"id": 8, "target": "FPT"}]},
+    ) as bootstrap:
+        client = TestClient(create_app(static_dir=static_dir))
+        response = client.post(
+            "/api/v1/vn/intraday-watch/bootstrap",
+            json={"watchlist": ["hpg", "FPT", "HPG"], "cooldownSeconds": 900},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["created"] == 1
+    bootstrap.assert_called_once_with(["HPG", "FPT"], cooldown_seconds=900)
+
+
+def test_vn_intraday_watch_rejects_invalid_ticker(tmp_path: Path) -> None:
+    static_dir = tmp_path / "static"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+    client = TestClient(create_app(static_dir=static_dir))
+    response = client.post("/api/v1/vn/intraday-watch/check", json={"watchlist": ["HPG1"]})
+    assert response.status_code == 422
+
+
 def test_analyze_endpoint_returns_technical_snapshot(tmp_path: Path) -> None:
     static_dir = tmp_path / "static"
     static_dir.mkdir()

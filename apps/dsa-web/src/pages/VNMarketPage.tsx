@@ -13,6 +13,7 @@ import {
   type VNAlertRule,
   type VNAlertRuleResult,
   type VNJournalItem,
+  type VNIntradayWatchItem,
   type VNPortfolioItem,
   type VNSectorFlowItem,
 } from '../api/vnMarket';
@@ -321,6 +322,8 @@ const VNMarketPage: React.FC = () => {
   const [alertItems, setAlertItems] = useState<VNAlertItem[]>([]);
   const [alertRules, setAlertRules] = useState<VNAlertRule[]>(() => readSavedRules());
   const [alertRuleResults, setAlertRuleResults] = useState<VNAlertRuleResult[]>([]);
+  const [intradayWatchItems, setIntradayWatchItems] = useState<VNIntradayWatchItem[]>([]);
+  const [intradayWatchStatus, setIntradayWatchStatus] = useState<string | null>(null);
   const [journalItems, setJournalItems] = useState<VNJournalItem[]>([]);
   const [journalNote, setJournalNote] = useState('');
   const [playbook, setPlaybook] = useState<VNDailyPlaybookResponse | null>(null);
@@ -597,12 +600,29 @@ const VNMarketPage: React.FC = () => {
     setIsLoadingAlerts(true);
     setError(null);
     try {
-      const [alertsResponse, rulesResponse] = await Promise.all([
+      const [alertsResponse, rulesResponse, intradayResponse] = await Promise.all([
         vnMarketApi.checkAlerts({ watchlist, mode: 'tplus' }),
         vnMarketApi.checkAlertRules(alertRules),
+        vnMarketApi.checkIntradayWatch(watchlist),
       ]);
       setAlertItems(alertsResponse.items);
       setAlertRuleResults(rulesResponse.items);
+      setIntradayWatchItems(intradayResponse.items);
+    } catch (err) {
+      setError(friendlyError(err));
+    } finally {
+      setIsLoadingAlerts(false);
+    }
+  };
+
+  const enableIntradayWatch = async () => {
+    setIsLoadingAlerts(true);
+    setError(null);
+    try {
+      const result = await vnMarketApi.bootstrapIntradayWatch(watchlist, 900);
+      setIntradayWatchStatus(`DNSE watcher đã bật: tạo ${result.created}, dùng lại ${result.reused} rule; worker kiểm tra mỗi phút, cooldown 15 phút.`);
+      const live = await vnMarketApi.checkIntradayWatch(watchlist);
+      setIntradayWatchItems(live.items);
     } catch (err) {
       setError(friendlyError(err));
     } finally {
@@ -1013,8 +1033,9 @@ const VNMarketPage: React.FC = () => {
 
         <div className="rounded-3xl border border-border bg-surface p-6">
           <h2 className="font-semibold text-foreground">Cảnh báo VN</h2>
-          <p className="mt-1 text-xs text-secondary-text">Check breakout/stop/RSI/volume alerts cho watchlist + rule riêng.</p>
-          <div className="mt-3 flex flex-wrap gap-2"><button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => void runAlerts()} disabled={isLoadingAlerts}>{isLoadingAlerts ? <RefreshCw className="h-4 w-4 animate-spin" /> : null}{isLoadingAlerts ? 'Đang kiểm tra…' : 'Kiểm tra cảnh báo'}</button><button type="button" className="btn-secondary" onClick={addAlertRule}>Thêm luật</button><button type="button" className="btn-secondary" onClick={saveAlertRules}>Lưu luật</button><button type="button" className="btn-secondary" onClick={resetAlertRules}>Reset</button></div>
+          <p className="mt-1 text-xs text-secondary-text">DNSE live check cho buy-zone/breakout/stop/target/volume/R:R; rule trình duyệt cũ vẫn giữ để kiểm tra thủ công.</p>
+          <div className="mt-3 flex flex-wrap gap-2"><button type="button" className="btn-primary inline-flex items-center gap-2" onClick={() => void enableIntradayWatch()} disabled={isLoadingAlerts}>{isLoadingAlerts ? <RefreshCw className="h-4 w-4 animate-spin" /> : null}{isLoadingAlerts ? 'Đang bật…' : 'Bật DNSE watcher'}</button><button type="button" className="btn-secondary inline-flex items-center gap-2" onClick={() => void runAlerts()} disabled={isLoadingAlerts}>{isLoadingAlerts ? <RefreshCw className="h-4 w-4 animate-spin" /> : null}{isLoadingAlerts ? 'Đang kiểm tra…' : 'Kiểm tra live'}</button><button type="button" className="btn-secondary" onClick={addAlertRule}>Thêm luật cũ</button><button type="button" className="btn-secondary" onClick={saveAlertRules}>Lưu luật</button><button type="button" className="btn-secondary" onClick={resetAlertRules}>Reset</button></div>
+          {intradayWatchStatus ? <div role="status" className="mt-3 rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-3 text-xs text-emerald-400">{intradayWatchStatus}</div> : null}
           <div className="mt-4 space-y-2 text-xs">
             {alertRules.map((rule) => (
               <div key={rule.id} className="grid min-w-0 gap-2 rounded-2xl border border-border bg-base p-3 sm:grid-cols-2 2xl:grid-cols-[auto_minmax(0,0.8fr)_minmax(0,1.25fr)_minmax(0,0.65fr)_minmax(0,1fr)_auto]">
@@ -1030,6 +1051,13 @@ const VNMarketPage: React.FC = () => {
             ))}
           </div>
           <div className="mt-4 space-y-2 text-sm">
+            {intradayWatchItems.map((item) => (
+              <div key={`dnse-${item.ticker}`} className={`rounded-2xl border p-3 ${item.triggered ? item.severity === 'critical' ? 'border-rose-500 bg-rose-500/10 text-rose-300' : 'border-amber-400 bg-amber-500/10 text-amber-300' : 'border-border bg-base text-secondary-text'}`}>
+                <div className="flex flex-wrap items-center justify-between gap-2"><strong>{item.ticker} · DNSE live</strong><span className="text-xs">{item.signal || 'watch'}{item.dataTimestamp ? ` · ${formatVNDateTime(item.dataTimestamp)}` : ''}</span></div>
+                <div className="mt-1">{item.message}</div>
+                <div className="mt-1 text-xs opacity-80">R:R {item.riskReward ?? '--'} · Volume/Vol20 {item.volumeRatio ?? '--'}x</div>
+              </div>
+            ))}
             {alertRuleResults.map((item) => (<div key={`${item.rule.id}-${item.ticker}`} className={`rounded-2xl border p-3 ${item.triggered ? 'border-amber-400 bg-amber-500/10 text-amber-300' : 'border-border bg-base text-secondary-text'}`}><strong>{item.ticker}</strong> · {item.message} <span className="text-xs">score {item.score ?? '--'}</span></div>))}
             {alertItems.map((item) => (
               <div key={item.ticker} className="rounded-2xl border border-border bg-base p-3">

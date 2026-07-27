@@ -15,6 +15,8 @@ const {
   getSectorFlow,
   checkAlerts,
   checkAlertRules,
+  checkIntradayWatch,
+  bootstrapIntradayWatch,
   createJournalSignal,
   listJournalSignals,
   getAccounts,
@@ -31,6 +33,8 @@ const {
   getSectorFlow: vi.fn(),
   checkAlerts: vi.fn(),
   checkAlertRules: vi.fn(),
+  checkIntradayWatch: vi.fn(),
+  bootstrapIntradayWatch: vi.fn(),
   createJournalSignal: vi.fn(),
   listJournalSignals: vi.fn(),
   getAccounts: vi.fn(),
@@ -50,6 +54,8 @@ vi.mock('../../api/vnMarket', () => ({
     getSectorFlow,
     checkAlerts,
     checkAlertRules,
+    checkIntradayWatch,
+    bootstrapIntradayWatch,
     createJournalSignal,
     listJournalSignals,
   },
@@ -94,6 +100,8 @@ describe('VNMarketPage regressions', () => {
     listJournalSignals.mockResolvedValue({ items: [] });
     checkAlerts.mockResolvedValue({ items: [] });
     checkAlertRules.mockResolvedValue({ items: [] });
+    checkIntradayWatch.mockResolvedValue({ items: [] });
+    bootstrapIntradayWatch.mockResolvedValue({ created: 0, reused: 6, items: [] });
     getDailyPlaybook.mockResolvedValue(playbook);
     checkPortfolio.mockResolvedValue({ items: [] });
     getAccounts.mockResolvedValue({ accounts: [] });
@@ -259,6 +267,28 @@ describe('VNMarketPage regressions', () => {
 
     expect(await screen.findByRole('status')).toHaveTextContent('Đã làm mới đầy đủ 3/3 khu vực');
     expect(screen.getByText(/Lần làm mới thành công:/)).not.toHaveTextContent('--');
+  });
+
+  it('boots DNSE watcher rules and renders the live T+ result', async () => {
+    bootstrapIntradayWatch.mockResolvedValue({ created: 2, reused: 4, items: [] });
+    checkIntradayWatch.mockResolvedValue({
+      items: [{
+        ticker: 'HPG', triggered: true, signal: 'buy_zone', severity: 'info', observedValue: 20.8,
+        threshold: 20.8, riskReward: 1.59, volumeRatio: 0.31, dataTimestamp: '2026-07-27T11:26:26',
+        message: 'HPG 20.80: vào vùng mua; chỉ giải ngân theo size plan', source: 'dnse_openapi',
+      }],
+    });
+    render(
+      <MemoryRouter initialEntries={['/vn-market/alerts']}>
+        <VNMarketPage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Bật DNSE watcher' }));
+
+    expect(await screen.findByRole('status')).toHaveTextContent('tạo 2, dùng lại 4 rule');
+    expect(screen.getByText('HPG · DNSE live')).toBeInTheDocument();
+    expect(bootstrapIntradayWatch).toHaveBeenCalledWith(['HPG', 'FPT', 'SSI', 'VCI', 'TCB', 'MWG'], 900);
   });
 
   it('keeps analysis news visible when the chart request fails', async () => {

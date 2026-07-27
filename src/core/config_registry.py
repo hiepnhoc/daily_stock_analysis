@@ -80,6 +80,17 @@ WEB_SETTINGS_HIDDEN_FROM_UI = {
     "USE_PROXY",
     "PROXY_HOST",
     "PROXY_PORT",
+    # Broker market-data credentials are intentionally backend-only in the Web
+    # UI. Clients receive secret-safe provider status/quality metadata only.
+    "VN_MARKET_DATA_PROVIDER",
+    "DNSE_API_KEY",
+    "DNSE_API_SECRET",
+    "DNSE_BASE_URL",
+    "VN_DNSE_PRICE_UNIT",
+    "SSI_FASTCONNECT_CLIENT_ID",
+    "SSI_FASTCONNECT_API_KEY",
+    "SSI_FASTCONNECT_API_SECRET",
+    "VN_SSI_PRICE_UNIT",
 }
 
 _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {

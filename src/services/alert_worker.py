@@ -161,6 +161,7 @@ class AlertWorker:
                 }
 
             record_status = result.get("record_status")
+            trigger_write = TriggerWriteResult()
             if record_status == "triggered":
                 self._attach_decision_signal_summary_safely(runtime_rule, result)
             if record_status in WRITABLE_TRIGGER_STATUSES:
@@ -175,6 +176,16 @@ class AlertWorker:
 
             if record_status == "triggered":
                 stats["triggered"] += 1
+                # VN T+ signals use one persisted trigger per signal/day. Once
+                # that exact signal is recorded, do not retry notification on
+                # every new DNSE trade tick when no channel is configured.
+                if (
+                    runtime_rule.source == "db"
+                    and not trigger_write.created
+                    and getattr(runtime_rule.rule, "alert_type", None) == "vn_tplus_setup"
+                ):
+                    stats["cooldown_suppressed"] += 1
+                    continue
                 if runtime_rule.source == "db":
                     cooldown_decision = self._check_db_cooldown(runtime_rule, trigger_id)
                     if cooldown_decision.suppressed:
